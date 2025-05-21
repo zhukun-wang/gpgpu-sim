@@ -560,12 +560,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
 
                     new_addr_type probe_pointer = mf->get_addr();
                     enum mem_access_type type = mf->get_access_type();
-                    if (m_gpu->gpu_tot_sim_cycle > m_gpu->gpu_sim_cycle){
-                        fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_tot_sim_cycle, 1.428570*0.001*m_gpu->gpu_tot_sim_cycle);
-                    }
-                    else{
-                        fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 1.42857*0.001*m_gpu->gpu_sim_cycle);
-                    }
+                    //if (m_gpu->gpu_tot_sim_cycle > m_gpu->gpu_sim_cycle){
+                        fprintf(f, "Time: %7llu cycles  %7.3f us   || ",  (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle), 1.428570*0.001*(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle));
+                    //}
+                    //else{
+                    //    fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 1.42857*0.001*m_gpu->gpu_sim_cycle);
+                    //}
                     switch (type) {
                         case GLOBAL_ACC_R:
                                 fprintf(f, "Access Type:  Read Global Memory     || ");
