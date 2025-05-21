@@ -556,59 +556,59 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
 
                 if (status == MISS){
 
-                    //FILE* f = fopen("memory_access.txt", "a");
+                    FILE* f = fopen("memory_access.txt", "a");
 
                     new_addr_type probe_pointer = mf->get_addr();
                     enum mem_access_type type = mf->get_access_type();
                     if (m_gpu->gpu_tot_sim_cycle > m_gpu->gpu_sim_cycle){
-                        printf("Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_tot_sim_cycle, 1.428570*0.001*m_gpu->gpu_tot_sim_cycle);
+                        fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_tot_sim_cycle, 1.428570*0.001*m_gpu->gpu_tot_sim_cycle);
                     }
                     else{
-                        printf("Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 1.42857*0.001*m_gpu->gpu_sim_cycle);
+                        fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 1.42857*0.001*m_gpu->gpu_sim_cycle);
                     }
                     switch (type) {
                         case GLOBAL_ACC_R:
-                                printf("Access Type:  Read Global Memory     || ");
+                                fprintf(f, "Access Type:  Read Global Memory     || ");
                                 break;
                         case LOCAL_ACC_R:
-                                printf("Access Type:  Read Local Memory      || ");
+                                fprintf(f, "Access Type:  Read Local Memory      || ");
                                 break;
                         case CONST_ACC_R:
-                                printf("Access Type:  Read Constant Cache    || ");
+                                fprintf(f, "Access Type:  Read Constant Cache    || ");
                                 break;
                         case TEXTURE_ACC_R:
-                                printf("Access Type:  Read Texture Cache     || ");
+                                fprintf(f, "Access Type:  Read Texture Cache     || ");
                                 break;
                         case GLOBAL_ACC_W:
-                                printf("Access Type:  Write Global Memory    || ");
+                                fprintf(f, "Access Type:  Write Global Memory    || ");
                                 break;
                         case LOCAL_ACC_W:
-                                printf("Access Type:  Write Local Memory     || ");
+                                fprintf(f, "Access Type:  Write Local Memory     || ");
                                 break;
                         case L1_WRBK_ACC:
-                                printf("Access Type:  L1 Cache Write Back    || ");
+                                fprintf(f, "Access Type:  L1 Cache Write Back    || ");
                                 break;
                         case L2_WRBK_ACC:
-                                printf("Access Type:  L2 Cache Write Back    || ");
+                                fprintf(f, "Access Type:  L2 Cache Write Back    || ");
                                 break;
                         case INST_ACC_R:
-                                printf("Access Type:  Read Instruction Cache || ");
+                                fprintf(f, "Access Type:  Read Instruction Cache || ");
                                 break;
                         case L1_WR_ALLOC_R:
-                                printf("Access Type:  L1 Write-Allocate Read || ");
+                                fprintf(f, "Access Type:  L1 Write-Allocate Read || ");
                                 break;
                         case L2_WR_ALLOC_R:
-                                printf("Access Type:  L2 Write-Allocate Read || ");
+                                fprintf(f, "Access Type:  L2 Write-Allocate Read || ");
                                 break;
                         case NUM_MEM_ACCESS_TYPE:
-                                printf("Access Type:  NUM_MEM_ACCESS_TYPE    || ");
+                                fprintf(f, "Access Type:  NUM_MEM_ACCESS_TYPE    || ");
                                 break;
                         default:
-                                printf("Access Type:  UNKNOWN                || ");
+                                fprintf(f, "Access Type:  UNKNOWN                || ");
                                 break;
                     }
-                    printf("Access Address:  %llx \n", probe_pointer);
-                    //fclose(f);
+                    fprintf(f, "Access Address:  %llx \n", probe_pointer);
+                    fclose(f);
            }
 
           if (mf->is_write() &&
