@@ -203,6 +203,7 @@ void memory_partition_unit::cache_cycle(unsigned cycle) {
        p++) {
     m_sub_partition[p]->cache_cycle(cycle);
   }
+
 }
 
 void memory_partition_unit::visualizer_print(gzFile visualizer_file) const {
@@ -252,7 +253,10 @@ void memory_partition_unit::simple_dram_model_cycle() {
           m_sub_partition[dest_spid]->set_done(mf_return);
           delete mf_return;
         } else {
-          m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
+          
+	  m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
+
+	  m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
           mf_return->set_status(
               IN_PARTITION_DRAM_TO_L2_QUEUE,
               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -285,6 +289,8 @@ void memory_partition_unit::simple_dram_model_cycle() {
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
       if (m_dram->full(mf->is_write())) break;
 
+      m_stats->L2_to_DRAM_bytes += mf->get_data_size();
+
       m_sub_partition[spid]->L2_dram_queue_pop();
       MEMPART_DPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
@@ -306,6 +312,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
 void memory_partition_unit::dram_cycle() {
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
+  
+  m_stats->report_throughput(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+
   mem_fetch *mf_return = m_dram->return_queue_top();
   if (mf_return) {
     unsigned dest_global_spid = mf_return->get_sub_partition_id();
@@ -316,6 +325,9 @@ void memory_partition_unit::dram_cycle() {
         m_sub_partition[dest_spid]->set_done(mf_return);
         delete mf_return;
       } else {
+	
+	m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
+
         m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
         mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -346,6 +358,13 @@ void memory_partition_unit::dram_cycle() {
         can_issue_to_dram(spid)) {
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
       if (m_dram->full(mf->is_write())) break;
+
+      m_stats->L2_to_DRAM_bytes += mf->get_data_size();
+
+      if (mf->is_write())
+        m_stats->write_count++;
+      else
+        m_stats->read_count++;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
       MEMPART_DPRINTF(
@@ -561,10 +580,10 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                     new_addr_type probe_pointer = mf->get_addr();
                     enum mem_access_type type = mf->get_access_type();
                     //if (m_gpu->gpu_tot_sim_cycle > m_gpu->gpu_sim_cycle){
-                        fprintf(f, "Time: %7llu cycles  %7.3f us   || ",  (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle), 1.428570*0.001*(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle));
+                        fprintf(f, "Time: %7llu cycles  %7.3f us   || ",  (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle), 0.88339*0.001*(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle));
                     //}
                     //else{
-                    //    fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 1.42857*0.001*m_gpu->gpu_sim_cycle);
+                    //    fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 0.88339*0.001*m_gpu->gpu_sim_cycle);
                     //}
                     switch (type) {
                         case GLOBAL_ACC_R:

@@ -537,3 +537,26 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
     printf("\naverage position of mrq chosen = %f\n", (float)l / k);
   }
 }
+
+void memory_stats_t::report_throughput(unsigned long long current_cycle) {
+
+    int cycle_resolution = 20;
+
+    if (current_cycle % cycle_resolution == 0 && current_cycle != last_print_cycle) {
+        
+	FILE* log = fopen("throughput_report.txt", "a");
+
+        fprintf(log, "%12llu   ", current_cycle);
+        fprintf(log, "%7llu   %8.3f   ", L2_to_DRAM_bytes, ((double)L2_to_DRAM_bytes * 1.132) / cycle_resolution);
+        fprintf(log, "%7llu   %8.3f   ", DRAM_to_L2_bytes, ((double)DRAM_to_L2_bytes * 1.132) / cycle_resolution);
+        fprintf(log, "%5llu   %5llu\n", read_count, write_count);
+
+        fclose(log);
+
+	L2_to_DRAM_bytes = 0;
+        DRAM_to_L2_bytes = 0;
+	read_count = 0;
+	write_count = 0;
+        last_print_cycle = current_cycle;
+    }
+}
