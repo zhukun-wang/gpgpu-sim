@@ -359,12 +359,56 @@ void memory_partition_unit::dram_cycle() {
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
       if (m_dram->full(mf->is_write())) break;
 
-      m_stats->L2_to_DRAM_bytes += mf->get_data_size();
+      FILE *f = fopen("memory_access.txt", "a");
+
+      enum mem_access_type type = mf->get_access_type();
+      //unsigned global_spid = mf->get_sub_partition_id();
+
+      //fprintf(f, "Time: %8llu cycles Sub Partition: %2u    || ",m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, global_spid);
+
+      fprintf(f, "Time: %8llu   || ",m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+
+      switch (type) {
+          case GLOBAL_ACC_R:
+              fprintf(f, "Access Type:  Read Global Memory     || "); break;
+          case GLOBAL_ACC_W:
+              fprintf(f, "Access Type:  Write Global Memory    || "); break;
+          case LOCAL_ACC_R:
+              fprintf(f, "Access Type:  Read Local Memory      || "); break;
+    	  case LOCAL_ACC_W:
+              fprintf(f, "Access Type:  Write Local Memory     || "); break;
+    	  case CONST_ACC_R:
+              fprintf(f, "Access Type:  Read Constant Cache    || "); break;
+    	  case TEXTURE_ACC_R:
+              fprintf(f, "Access Type:  Read Texture Cache     || "); break;
+    	  case L1_WRBK_ACC:
+              fprintf(f, "Access Type:  L1 Write Back          || "); break;
+    	  case L2_WRBK_ACC:
+              fprintf(f, "Access Type:  L2 Write Back          || "); break;
+    	  case L1_WR_ALLOC_R:
+              fprintf(f, "Access Type:  L1 Write-Alloc Read    || "); break;
+    	  case L2_WR_ALLOC_R:
+              fprintf(f, "Access Type:  L2 Write-Alloc Read    || "); break;
+    	  default:
+              fprintf(f, "Access Type:  UNKNOWN                || "); break;
+      }
+
+      fprintf(f, "size: %4u   addr: 0x%llx\n",mf->get_data_size(), mf->get_addr());
+      fclose(f);
+
+      //if (mf->is_write()) {
+      //  m_sub_partition[spid]->L2_dram_queue_pop();
+      //delete mf;
+      //continue;
+      //}
 
       if (mf->is_write())
         m_stats->write_count++;
-      else
+      else{
         m_stats->read_count++;
+        m_stats->L2_to_DRAM_bytes += mf->get_data_size();
+      }
+
 
       m_sub_partition[spid]->L2_dram_queue_pop();
       MEMPART_DPRINTF(
@@ -572,63 +616,6 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
             m_icnt_L2_queue->pop();
           }
         } else if (status != RESERVATION_FAIL) {
-
-                if (status == MISS){
-
-                    FILE* f = fopen("memory_access.txt", "a");
-
-                    new_addr_type probe_pointer = mf->get_addr();
-                    enum mem_access_type type = mf->get_access_type();
-                    //if (m_gpu->gpu_tot_sim_cycle > m_gpu->gpu_sim_cycle){
-                        fprintf(f, "Time: %7llu cycles  %7.3f us   || ",  (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle), 0.88339*0.001*(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle));
-                    //}
-                    //else{
-                    //    fprintf(f, "Time: %6llu cycles  %6.3f us || ", m_gpu->gpu_sim_cycle, 0.88339*0.001*m_gpu->gpu_sim_cycle);
-                    //}
-                    switch (type) {
-                        case GLOBAL_ACC_R:
-                                fprintf(f, "Access Type:  Read Global Memory     || ");
-                                break;
-                        case LOCAL_ACC_R:
-                                fprintf(f, "Access Type:  Read Local Memory      || ");
-                                break;
-                        case CONST_ACC_R:
-                                fprintf(f, "Access Type:  Read Constant Cache    || ");
-                                break;
-                        case TEXTURE_ACC_R:
-                                fprintf(f, "Access Type:  Read Texture Cache     || ");
-                                break;
-                        case GLOBAL_ACC_W:
-                                fprintf(f, "Access Type:  Write Global Memory    || ");
-                                break;
-                        case LOCAL_ACC_W:
-                                fprintf(f, "Access Type:  Write Local Memory     || ");
-                                break;
-                        case L1_WRBK_ACC:
-                                fprintf(f, "Access Type:  L1 Cache Write Back    || ");
-                                break;
-                        case L2_WRBK_ACC:
-                                fprintf(f, "Access Type:  L2 Cache Write Back    || ");
-                                break;
-                        case INST_ACC_R:
-                                fprintf(f, "Access Type:  Read Instruction Cache || ");
-                                break;
-                        case L1_WR_ALLOC_R:
-                                fprintf(f, "Access Type:  L1 Write-Allocate Read || ");
-                                break;
-                        case L2_WR_ALLOC_R:
-                                fprintf(f, "Access Type:  L2 Write-Allocate Read || ");
-                                break;
-                        case NUM_MEM_ACCESS_TYPE:
-                                fprintf(f, "Access Type:  NUM_MEM_ACCESS_TYPE    || ");
-                                break;
-                        default:
-                                fprintf(f, "Access Type:  UNKNOWN                || ");
-                                break;
-                    }
-                    fprintf(f, "Access Address:  %llx \n", probe_pointer);
-                    fclose(f);
-           }
 
           if (mf->is_write() &&
               (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE ||

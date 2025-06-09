@@ -245,6 +245,59 @@ dram_req_t::dram_req_t(class mem_fetch *mf, unsigned banks,
 }
 
 void dram_t::push(class mem_fetch *data) {
+
+    FILE* f = fopen("dram_access.txt", "a");
+
+    enum mem_access_type type = data->get_access_type();
+    unsigned long long cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+
+    fprintf(f, "Time: %7llu cycles   || ",cycle);
+
+    switch (type) {
+        case GLOBAL_ACC_R:
+            fprintf(f, "Access Type:  Read Global Memory     || ");
+            break;
+        case LOCAL_ACC_R:
+            fprintf(f, "Access Type:  Read Local Memory      || ");
+            break;
+        case CONST_ACC_R:
+            fprintf(f, "Access Type:  Read Constant Cache    || ");
+            break;
+        case TEXTURE_ACC_R:
+            fprintf(f, "Access Type:  Read Texture Cache     || ");
+            break;
+        case GLOBAL_ACC_W:
+            fprintf(f, "Access Type:  Write Global Memory    || ");
+            break;
+        case LOCAL_ACC_W:
+            fprintf(f, "Access Type:  Write Local Memory     || ");
+            break;
+        //case L1_WRBK_ACC:
+        //    fprintf(f, "Access Type:  L1 Cache Write Back    || ");
+        //    break;
+        //case L2_WRBK_ACC:
+        //    fprintf(f, "Access Type:  L2 Cache Write Back    || ");
+        //    break;
+        //case INST_ACC_R:
+        //    fprintf(f, "Access Type:  Read Instruction Cache || ");
+        //    break;
+        //case L1_WR_ALLOC_R:
+        //    fprintf(f, "Access Type:  L1 Write-Allocate Read || ");
+        //    break;
+        //case L2_WR_ALLOC_R:
+        //    fprintf(f, "Access Type:  L2 Write-Allocate Read || ");
+        //    break;
+        //case WRITE_ACK:
+        //    fprintf(f, "Access Type:  Write Acknowledge      || ");
+        //    break;
+        default:
+            fprintf(f, "Access Type:  UNKNOWN     id:%d       || ", type);
+            break;
+    }
+
+    fprintf(f, "\n");
+    fclose(f);
+
   assert(id == data->get_tlx_addr()
                    .chip);  // Ensure request is in correct memory partition
 
