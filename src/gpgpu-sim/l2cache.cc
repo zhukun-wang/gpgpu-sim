@@ -48,6 +48,7 @@
 #include "mem_fetch.h"
 #include "mem_latency_stat.h"
 #include "shader.h"
+#include "addrdec.h"
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
                                          mem_access_type type, unsigned size,
@@ -325,8 +326,10 @@ void memory_partition_unit::dram_cycle() {
         m_sub_partition[dest_spid]->set_done(mf_return);
         delete mf_return;
       } else {
-	
+        
+	if (!(mf_return->is_write())){	
 	m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
+        }
 
         m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
         mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
@@ -363,10 +366,13 @@ void memory_partition_unit::dram_cycle() {
 
       enum mem_access_type type = mf->get_access_type();
       //unsigned global_spid = mf->get_sub_partition_id();
+      
+      addrdec_t tlx;
+      m_config->m_address_mapping.addrdec_tlx(mf->get_addr(), &tlx);
 
       //fprintf(f, "Time: %8llu cycles Sub Partition: %2u    || ",m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, global_spid);
 
-      fprintf(f, "Time: %8llu   || ",m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      fprintf(f, "%2u || %2u || %8llu || ", tlx.chip, tlx.bk, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
       switch (type) {
           case GLOBAL_ACC_R:
@@ -396,17 +402,18 @@ void memory_partition_unit::dram_cycle() {
       fprintf(f, "size: %4u   addr: 0x%llx\n",mf->get_data_size(), mf->get_addr());
       fclose(f);
 
-      //if (mf->is_write()) {
-      //  m_sub_partition[spid]->L2_dram_queue_pop();
-      //delete mf;
-      //continue;
-      //}
+     // if (mf->is_write()) {
+     //   m_sub_partition[spid]->L2_dram_queue_pop();
+     // delete mf;
+     // continue;
+     // }
 
-      if (mf->is_write())
+      if (mf->is_write()){
         m_stats->write_count++;
+        m_stats->L2_to_DRAM_bytes += mf->get_data_size();
+      }
       else{
         m_stats->read_count++;
-        m_stats->L2_to_DRAM_bytes += mf->get_data_size();
       }
 
 

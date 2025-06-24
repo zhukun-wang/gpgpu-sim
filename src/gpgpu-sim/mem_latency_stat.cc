@@ -540,7 +540,7 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
 
 void memory_stats_t::report_throughput(unsigned long long current_cycle) {
 
-    int cycle_resolution = 20;
+    int cycle_resolution = 500;
 
     if (current_cycle % cycle_resolution == 0 && current_cycle != last_print_cycle) {
         
