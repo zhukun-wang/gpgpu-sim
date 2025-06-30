@@ -517,7 +517,9 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   sscanf(m_config->gpgpu_L2_queue_config, "%u:%u:%u:%u", &icnt_L2, &L2_dram,
          &dram_L2, &L2_icnt);
   m_icnt_L2_queue = new fifo_pipeline<mem_fetch>("icnt-to-L2", 0, icnt_L2);
-  m_L2_dram_queue = new fifo_pipeline<mem_fetch>("L2-to-dram", 0, L2_dram);
+  //m_L2_dram_queue = new fifo_pipeline<mem_fetch>("L2-to-dram", 0, L2_dram);
+  m_L2_dram_read_queue  = new fifo_pipeline<mem_fetch>("L2-to-dram-read", 0, L2_dram);
+  m_L2_dram_write_queue = new fifo_pipeline<mem_fetch>("L2-to-dram-write", 0, L2_dram);
   m_dram_L2_queue = new fifo_pipeline<mem_fetch>("dram-to-L2", 0, dram_L2);
   m_L2_icnt_queue = new fifo_pipeline<mem_fetch>("L2-to-icnt", 0, L2_icnt);
   wb_addr = -1;
@@ -525,7 +527,8 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
 
 memory_sub_partition::~memory_sub_partition() {
   delete m_icnt_L2_queue;
-  delete m_L2_dram_queue;
+  delete m_L2_dram_read_queue;
+  delete m_L2_dram_write_queue;
   delete m_dram_L2_queue;
   delete m_L2_icnt_queue;
   delete m_L2cache;
@@ -584,7 +587,8 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
   if (!m_config->m_L2_config.disabled()) m_L2cache->cycle();
 
   // new L2 texture accesses and/or non-texture accesses
-  if (!m_L2_dram_queue->full() && !m_icnt_L2_queue->empty()) {
+  //if (!m_L2_dram_queue->full() && !m_icnt_L2_queue->empty()) {
+  if (!L2_dram_queue_full() && !m_icnt_L2_queue->empty()) {
     mem_fetch *mf = m_icnt_L2_queue->top();
     if (!m_config->m_L2_config.disabled() &&
         ((m_config->m_L2_texure_only && mf->istexture()) ||
@@ -651,7 +655,11 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       // L2 is disabled or non-texture access to texture-only L2
       mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-      m_L2_dram_queue->push(mf);
+      //m_L2_dram_queue->push(mf);
+      if (mf->is_write())
+        m_L2_dram_write_queue->push(mf);
+      else
+        m_L2_dram_read_queue->push(mf);
       m_icnt_L2_queue->pop();
     }
   }
@@ -665,6 +673,11 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   }
+
+  if (m_L2_dram_read_queue->empty())
+    ++m_read_idle_ctr;
+  else
+    m_read_idle_ctr = 0;
 }
 
 bool memory_sub_partition::full() const { return m_icnt_L2_queue->full(); }
@@ -674,17 +687,47 @@ bool memory_sub_partition::full(unsigned size) const {
 }
 
 bool memory_sub_partition::L2_dram_queue_empty() const {
-  return m_L2_dram_queue->empty();
+  //return m_L2_dram_queue->empty();
+  return m_L2_dram_read_queue->empty() &&
+           m_L2_dram_write_queue->empty();
 }
 
 class mem_fetch *memory_sub_partition::L2_dram_queue_top() const {
-  return m_L2_dram_queue->top();
+  //return m_L2_dram_queue->top();
+  if (m_L2_dram_write_queue->full() && !m_L2_dram_write_queue->empty()) {
+        return m_L2_dram_write_queue->top();
+  } else if (!m_L2_dram_read_queue->empty()) {
+        return m_L2_dram_read_queue->top();
+  //} else if (!m_L2_dram_write_queue->empty() && (m_read_idle_ctr >= READ_IDLE_THRESHOLD)) {
+  } else if (!m_L2_dram_write_queue->empty()){
+        return m_L2_dram_write_queue->top();
+  } else {
+        return nullptr;
+  }
+
 }
 
-void memory_sub_partition::L2_dram_queue_pop() { m_L2_dram_queue->pop(); }
+void memory_sub_partition::L2_dram_queue_pop() { 
+  //m_L2_dram_queue->pop();
+  if (m_L2_dram_write_queue->full() && !m_L2_dram_write_queue->empty()) {
+        m_L2_dram_write_queue->pop();
+	m_read_idle_ctr = 0;
+  } else if (!m_L2_dram_read_queue->empty()) {
+        m_L2_dram_read_queue->pop();
+	m_read_idle_ctr = 0;
+  //} else if (!m_L2_dram_write_queue->empty() && (m_read_idle_ctr >= READ_IDLE_THRESHOLD)) {
+  } else if (!m_L2_dram_write_queue->empty()){
+        m_L2_dram_write_queue->pop();
+	m_read_idle_ctr = 0;
+  }
+}
 
 bool memory_sub_partition::dram_L2_queue_full() const {
   return m_dram_L2_queue->full();
+}
+
+bool memory_sub_partition::L2_dram_queue_full() const {
+  return m_L2_dram_read_queue->full() || m_L2_dram_write_queue->full();
 }
 
 void memory_sub_partition::dram_L2_queue_push(class mem_fetch *mf) {

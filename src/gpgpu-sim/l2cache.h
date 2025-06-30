@@ -181,9 +181,10 @@ class memory_sub_partition {
 
   // interface to L2_dram_queue
   bool L2_dram_queue_empty() const;
+  bool L2_dram_queue_full() const;
   class mem_fetch *L2_dram_queue_top() const;
   void L2_dram_queue_pop();
-
+  
   // interface to dram_L2_queue
   bool dram_L2_queue_full() const;
   void dram_L2_queue_push(class mem_fetch *mf);
@@ -223,7 +224,8 @@ class memory_sub_partition {
 
   // these are various FIFOs between units within a memory partition
   fifo_pipeline<mem_fetch> *m_icnt_L2_queue;
-  fifo_pipeline<mem_fetch> *m_L2_dram_queue;
+  fifo_pipeline<mem_fetch> *m_L2_dram_read_queue;
+  fifo_pipeline<mem_fetch> *m_L2_dram_write_queue;
   fifo_pipeline<mem_fetch> *m_dram_L2_queue;
   fifo_pipeline<mem_fetch> *m_L2_icnt_queue;  // L2 cache hit response queue
 
@@ -245,6 +247,9 @@ class memory_sub_partition {
   // is accessed (in both cudamemcpyies and otherwise) this value is added to
   // the gpgpu-sim cycle counters.
   unsigned m_memcpy_cycle_offset;
+
+  unsigned m_read_idle_ctr;
+  static const unsigned READ_IDLE_THRESHOLD = 256;
 };
 
 class L2interface : public mem_fetch_interface {
@@ -253,11 +258,17 @@ class L2interface : public mem_fetch_interface {
   virtual ~L2interface() {}
   virtual bool full(unsigned size, bool write) const {
     // assume read and write packets all same size
-    return m_unit->m_L2_dram_queue->full();
+    //return m_unit->m_L2_dram_queue->full();
+    return m_unit->L2_dram_queue_full();
+
   }
   virtual void push(mem_fetch *mf) {
     mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE, 0 /*FIXME*/);
-    m_unit->m_L2_dram_queue->push(mf);
+    //m_unit->m_L2_dram_queue->push(mf);
+    if (mf->is_write())
+      m_unit->m_L2_dram_write_queue->push(mf);
+    else
+      m_unit->m_L2_dram_read_queue->push(mf);
   }
 
  private:
