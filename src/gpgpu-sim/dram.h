@@ -68,6 +68,8 @@ class dram_req_t {
   unsigned int insertion_time;
   class mem_fetch *data;
   class gpgpu_sim *m_gpu;
+
+  unsigned long long sched_enqueue_cycle;
 };
 
 struct bankgrp_t {

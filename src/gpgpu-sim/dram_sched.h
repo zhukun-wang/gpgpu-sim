@@ -49,6 +49,8 @@ class frfcfs_scheduler {
   unsigned num_pending() const { return m_num_pending; }
   unsigned num_write_pending() const { return m_num_write_pending; }
 
+  void update_counters(dram_req_t* req, unsigned bank);
+
  private:
   const memory_config *m_config;
   dram_t *m_dram;
@@ -68,6 +70,18 @@ class frfcfs_scheduler {
 
   enum memory_mode m_mode;
   memory_stats_t *m_stats;
+
+  enum reorder_state_t { REORDER_READ_PHASE, REORDER_WRITE_PHASE };
+
+  std::vector<bool> m_last_is_write; 
+  std::vector<bool> m_last_valid; 
+
+  reorder_state_t m_reorder_state;
+  unsigned        m_batch_left;
+  static const unsigned REORDER_BATCH = 8;
+
+  static const unsigned AGE_EPS = 10;
+
 };
 
 #endif
