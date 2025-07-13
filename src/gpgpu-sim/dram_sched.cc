@@ -136,150 +136,68 @@ dram_req_t* frfcfs_scheduler::schedule(unsigned bank, unsigned curr_row) {
 
     if (m_current_queue[bank].empty()) return NULL;
 
-    auto match_type = [this](dram_req_t* req, unsigned bank) {
-    	if (!m_last_valid[bank]) return true;          
-    	bool is_write = req->data->is_write();
-    	return is_write == m_last_is_write[bank];   
-    };
+auto same_type = [this,bank](dram_req_t* r) {
+    if (!m_last_valid[bank]) return true;
+    return r->data->is_write() == m_last_is_write[bank];
+};
+auto age_of = [](dram_req_t* r){ return r->sched_enqueue_cycle; };
 
-    // Step 1: Row Hit + Same Type
-    auto bin_it = m_current_bins[bank].find(curr_row);
-    if (bin_it != m_current_bins[bank].end()) {
-        for (auto it = bin_it->second.begin(); it != bin_it->second.end(); ++it) {
-            dram_req_t* req = **it;
-            if (match_type(req, bank)) {
-                dram_req_t* result = req;
-                m_current_queue[bank].erase(*it);
-                bin_it->second.erase(it);
-                if (bin_it->second.empty()) {
-                    m_current_bins[bank].erase(curr_row);
-                }
-                
-		update_counters(result, bank);
-		
-		FILE *f = fopen("dram_delay_log.txt", "a");
+std::vector<std::list<dram_req_t*>::iterator> hit_list;
+auto bin_it = m_current_bins[bank].find(curr_row);
+if (bin_it != m_current_bins[bank].end())
+    hit_list.assign(bin_it->second.begin(), bin_it->second.end());
 
-  fprintf(f,  "Clock: %8llu | DRAM: %2u | Bank: %2u | Row: %4u | Dispatch: %s | Addr: 0x%llx | Row Hit + Same Type\n",
-                    m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle,
-                    m_dram->id,
-                    result->bk,
-                    result->row,
-		    result->rw == READ ? "READ " : "WRITE",
-                    result->addr);
+std::list<dram_req_t*>::iterator pick_it;
+bool found = false;
 
-  fclose(f);
+auto pick_oldest = [&](std::vector<std::list<dram_req_t*>::iterator>& vec) {
+    return std::min_element(vec.begin(), vec.end(),
+        [&](std::list<dram_req_t*>::iterator a, std::list<dram_req_t*>::iterator b) {
+            return age_of(*a) < age_of(*b);
+        });
+};
 
+if (!hit_list.empty()) {
+    pick_it = *pick_oldest(hit_list);           
+    uint64_t best_age = age_of(*pick_it);
 
-                return result;
-            }
-        }
-
-        // Step 2: Row Hit + Diff Type
-        if (!bin_it->second.empty()) {
-    	auto row_it = bin_it->second.begin();
-    	dram_req_t* result = **row_it;
-    	m_current_queue[bank].erase(*row_it);
-    	bin_it->second.erase(row_it);
-    	if (bin_it->second.empty()) {
-            m_current_bins[bank].erase(curr_row);
-    	}
-   
-        update_counters(result, bank);
-
-    	FILE *f = fopen("dram_delay_log.txt", "a");
-
-  	fprintf(f,  "Clock: %8llu | DRAM: %2u | Bank: %2u | Row: %4u | Dispatch: %s | Addr: 0x%llx | Row Hit + Diff Type\n",
-                    m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle,
-                    m_dram->id,
-                    result->bk,
-                    result->row,
-                    result->rw == READ ? "READ " : "WRITE",
-                    result->addr);
-
-  	fclose(f);
-
-    	return result;
-    	}
+    for (auto it : hit_list) {
+        uint64_t age = age_of(*it);
+        if (age - best_age <= AGE_EPS && same_type(*it) && !same_type(*pick_it))
+            pick_it = it;
     }
-
-    // Step 3: Oldest Same Type in Queue
+    found = true;
+} else {
+    uint64_t best_age = ~0ULL;
     for (auto it = m_current_queue[bank].begin(); it != m_current_queue[bank].end(); ++it) {
-        dram_req_t* req = *it;
-        if (match_type(req, bank)) {
-            auto row = req->row;
-            auto bin_ptr = m_current_bins[bank].find(row);
-            if (bin_ptr != m_current_bins[bank].end()) {
-                for (auto row_it = bin_ptr->second.begin(); row_it != bin_ptr->second.end(); ++row_it) {
-                    dram_req_t* row_req = **row_it;
-                    if (match_type(row_req, bank)) {
-                        dram_req_t* result = row_req;
-                        m_current_queue[bank].erase(*row_it);
-                        bin_ptr->second.erase(row_it);
-                        if (bin_ptr->second.empty()) {
-                            m_current_bins[bank].erase(row);
-                        }
-			update_counters(result, bank);
-			
-			FILE *f = fopen("dram_delay_log.txt", "a");
-
-			fprintf(f,  "Clock: %8llu | DRAM: %2u | Bank: %2u | Row: %4u | Dispatch: %s | Addr: 0x%llx | Row Miss + Same Type\n",
-                    		m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle,
-                    		m_dram->id,
-                    		result->bk,
-                    		result->row,
-                    		result->rw == READ ? "READ " : "WRITE",
-                    		result->addr);
-
-  			fclose(f);
-
-
-                        return result;
-                    }
-                }
-            }
-        }
+        uint64_t age = age_of(*it);
+        if (age < best_age) { best_age = age; pick_it = it; }
+        else if (age - best_age <= AGE_EPS &&
+                 same_type(*it) && !same_type(*pick_it))
+            pick_it = it;                       
     }
-
-    // Step 4: Fallback - Oldest Request (Any Type)
-if (!m_current_queue[bank].empty()) {
-    auto head_it  = m_current_queue[bank].begin();
-    dram_req_t* req = *head_it;
-    unsigned row = req->row;
-
-    auto bin_ptr = m_current_bins[bank].find(row);
-    if (bin_ptr != m_current_bins[bank].end() && !bin_ptr->second.empty()) {
-        auto row_it   = bin_ptr->second.begin();
-        auto queue_it = *row_it;              
-        dram_req_t* result = **row_it;
-
-        m_current_queue[bank].erase(queue_it);   
-        bin_ptr->second.erase(row_it);         
-        if (bin_ptr->second.empty())
-            m_current_bins[bank].erase(row);
-
-	update_counters(result, bank);
-
-        FILE* f = fopen("dram_delay_log.txt","a");
-        fprintf(f, "Clock: %8llu | DRAM: %2u | Bank: %2u | Row: %4u | Dispatch: %s | Addr: 0x%llx | Row Miss + Diff Type\n",
-                m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle,
-                m_dram->id, result->bk, result->row,
-                result->rw==READ ? "READ ":"WRITE",
-                result->addr);
-        fclose(f);
-
-        return result;
-    }
+    found = (best_age != ~0ULL);
 }
-/*
-if (!m_current_queue[bank].empty()) {
-    dram_req_t* any = m_current_queue[bank].front();
-    m_current_queue[bank].pop_front();
-    if (any->data->is_write()) m_num_write_pending--; else m_num_pending--;
-    return any;
+
+if (!found) return NULL;  
+
+dram_req_t* result = *pick_it;
+unsigned row = result->row;
+
+auto bin_ptr = m_current_bins[bank].find(row);
+if (bin_ptr != m_current_bins[bank].end()) {
+    bin_ptr->second.erase(
+        std::find(bin_ptr->second.begin(), bin_ptr->second.end(), pick_it));
+    if (bin_ptr->second.empty()) m_current_bins[bank].erase(row);
 }
-*/
-    // If no request found (should not happen), return NULL
-    return NULL;
+m_current_queue[bank].erase(pick_it);
+
+update_counters(result, bank);             
+
+//log_dispatch(result, bank, curr_row);    
+
+return result;
+
 }
 
 void frfcfs_scheduler::update_counters(dram_req_t* req, unsigned bank) {
