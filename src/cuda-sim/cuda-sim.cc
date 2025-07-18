@@ -2261,6 +2261,7 @@ void print_splash() {
     fclose(fopen("throughput_report.txt", "w"));
     fclose(fopen("reorder_log.txt", "w"));
     fclose(fopen("dram_delay_log.txt", "w"));
+    fclose(fopen("RS_log.txt", "w"));
     splash_printed = 1;
   }
 }

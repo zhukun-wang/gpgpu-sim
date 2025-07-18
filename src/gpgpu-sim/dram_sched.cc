@@ -39,10 +39,6 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
   m_num_pending = 0;
   m_num_write_pending = 0;
   m_dram = dm;
-
-  m_reorder_state = REORDER_READ_PHASE;
-  m_batch_left    = REORDER_BATCH;
-
   m_queue = new std::list<dram_req_t *>[m_config->nbk];
   m_bins = new std::map<
       unsigned, std::list<std::list<dram_req_t *>::iterator> >[m_config->nbk];
@@ -73,10 +69,7 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
   m_mode = READ_MODE;
 }
 
-void frfcfs_scheduler::add_req(dram_req_t *req) {
-
-  req->sched_enqueue_cycle = m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle;
-
+void frfcfs_scheduler::add_req(dram_req_t *req, unsigned insert_offset) {
   if (m_config->seperate_write_queue_enabled && req->data->is_write()) {
     assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
     m_num_write_pending++;
@@ -87,9 +80,23 @@ void frfcfs_scheduler::add_req(dram_req_t *req) {
   } else {
     assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
     m_num_pending++;
-    m_queue[req->bk].push_front(req);
-    std::list<dram_req_t *>::iterator ptr = m_queue[req->bk].begin();
-    m_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
+
+    auto &queue = m_queue[req->bk];
+    std::list<dram_req_t *>::iterator pos;
+
+    if (queue.size() >= insert_offset) {
+	    pos = queue.end();
+	    std::advance(pos, -insert_offset);
+    } else {
+	    pos = queue.begin();
+    }
+
+    auto ptr = queue.insert(pos, req);
+    m_bins[req->bk][req->row].push_front(ptr);
+
+    //m_queue[req->bk].push_front(req);
+    //std::list<dram_req_t *>::iterator ptr = m_queue[req->bk].begin();
+    //m_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
   }
 }
 
@@ -113,104 +120,96 @@ void frfcfs_scheduler::data_collection(unsigned int bank) {
   m_stats->num_activates[m_dram->id][bank]++;
 }
 
-dram_req_t* frfcfs_scheduler::schedule(unsigned bank, unsigned curr_row) {
- 
-    unsigned n_banks = m_config->nbk; 
-    m_last_is_write.resize(n_banks, false);
-    m_last_valid.resize(n_banks, false);     
+dram_req_t *frfcfs_scheduler::schedule(unsigned bank, unsigned curr_row) {
+  // row
+  bool rowhit = true;
+  std::list<dram_req_t *> *m_current_queue = m_queue;
+  std::map<unsigned, std::list<std::list<dram_req_t *>::iterator> >
+      *m_current_bins = m_bins;
+  std::list<std::list<dram_req_t *>::iterator> **m_current_last_row =
+      m_last_row;
 
-    std::list<dram_req_t*>* m_current_queue = m_queue;
-    std::map<unsigned, std::list<std::list<dram_req_t*>::iterator>>* m_current_bins = m_bins;
-
-    if (m_config->seperate_write_queue_enabled) {
-        if (m_mode == READ_MODE && m_num_write_pending >= m_config->write_high_watermark)
-            m_mode = WRITE_MODE;
-        else if (m_mode == WRITE_MODE && m_num_write_pending <= m_config->write_low_watermark)
-            m_mode = READ_MODE;
+  if (m_config->seperate_write_queue_enabled) {
+    if (m_mode == READ_MODE &&
+        ((m_num_write_pending >= m_config->write_high_watermark)
+         // || (m_queue[bank].empty() && !m_write_queue[bank].empty())
+         )) {
+      m_mode = WRITE_MODE;
+    } else if (m_mode == WRITE_MODE &&
+               ((m_num_write_pending < m_config->write_low_watermark)
+                //  || (!m_queue[bank].empty() && m_write_queue[bank].empty())
+                )) {
+      m_mode = READ_MODE;
     }
+  }
 
-    if (m_mode == WRITE_MODE) {
-        m_current_queue = m_write_queue;
-        m_current_bins = m_write_bins;
-    }
+  if (m_mode == WRITE_MODE) {
+    m_current_queue = m_write_queue;
+    m_current_bins = m_write_bins;
+    m_current_last_row = m_last_write_row;
+  }
 
+  if (m_current_last_row[bank] == NULL) {
     if (m_current_queue[bank].empty()) return NULL;
 
-auto same_type = [this,bank](dram_req_t* r) {
-    if (!m_last_valid[bank]) return true;
-    return r->data->is_write() == m_last_is_write[bank];
-};
-auto age_of = [](dram_req_t* r){ return r->sched_enqueue_cycle; };
-
-std::vector<std::list<dram_req_t*>::iterator> hit_list;
-auto bin_it = m_current_bins[bank].find(curr_row);
-if (bin_it != m_current_bins[bank].end())
-    hit_list.assign(bin_it->second.begin(), bin_it->second.end());
-
-std::list<dram_req_t*>::iterator pick_it;
-bool found = false;
-
-auto pick_oldest = [&](std::vector<std::list<dram_req_t*>::iterator>& vec) {
-    return std::min_element(vec.begin(), vec.end(),
-        [&](std::list<dram_req_t*>::iterator a, std::list<dram_req_t*>::iterator b) {
-            return age_of(*a) < age_of(*b);
-        });
-};
-
-if (!hit_list.empty()) {
-    pick_it = *pick_oldest(hit_list);           
-    uint64_t best_age = age_of(*pick_it);
-
-    for (auto it : hit_list) {
-        uint64_t age = age_of(*it);
-        if (age - best_age <= AGE_EPS && same_type(*it) && !same_type(*pick_it))
-            pick_it = it;
-    }
-    found = true;
-} else {
-    uint64_t best_age = ~0ULL;
-    for (auto it = m_current_queue[bank].begin(); it != m_current_queue[bank].end(); ++it) {
-        uint64_t age = age_of(*it);
-        if (age < best_age) { best_age = age; pick_it = it; }
-        else if (age - best_age <= AGE_EPS &&
-                 same_type(*it) && !same_type(*pick_it))
-            pick_it = it;                       
-    }
-    found = (best_age != ~0ULL);
-}
-
-if (!found) return NULL;  
-
-dram_req_t* result = *pick_it;
-unsigned row = result->row;
-
-auto bin_ptr = m_current_bins[bank].find(row);
-if (bin_ptr != m_current_bins[bank].end()) {
-    bin_ptr->second.erase(
-        std::find(bin_ptr->second.begin(), bin_ptr->second.end(), pick_it));
-    if (bin_ptr->second.empty()) m_current_bins[bank].erase(row);
-}
-m_current_queue[bank].erase(pick_it);
-
-update_counters(result, bank);             
-
-//log_dispatch(result, bank, curr_row);    
-
-return result;
-
-}
-
-void frfcfs_scheduler::update_counters(dram_req_t* req, unsigned bank) {
-    bool is_write = req->data->is_write();
-    if (m_config->seperate_write_queue_enabled) {
-        if (is_write) m_num_write_pending--;
-        else m_num_pending--;
+    std::map<unsigned, std::list<std::list<dram_req_t *>::iterator> >::iterator
+        bin_ptr = m_current_bins[bank].find(curr_row);
+    if (bin_ptr == m_current_bins[bank].end()) {
+      dram_req_t *req = m_current_queue[bank].back();
+      bin_ptr = m_current_bins[bank].find(req->row);
+      assert(bin_ptr !=
+             m_current_bins[bank].end());  // where did the request go???
+      m_current_last_row[bank] = &(bin_ptr->second);
+      data_collection(bank);
+      rowhit = false;
     } else {
-        m_num_pending--;
+      m_current_last_row[bank] = &(bin_ptr->second);
+      rowhit = true;
     }
+  }
+  std::list<dram_req_t *>::iterator next = m_current_last_row[bank]->back();
+  dram_req_t *req = (*next);
 
-    m_last_is_write[bank] = is_write;
-    m_last_valid[bank]    = true;
+  // rowblp stats
+  m_dram->access_num++;
+  bool is_write = req->data->is_write();
+  if (is_write)
+    m_dram->write_num++;
+  else
+    m_dram->read_num++;
+
+  if (rowhit) {
+    m_dram->hits_num++;
+    if (is_write)
+      m_dram->hits_write_num++;
+    else
+      m_dram->hits_read_num++;
+  }
+
+  m_stats->concurrent_row_access[m_dram->id][bank]++;
+  m_stats->row_access[m_dram->id][bank]++;
+  m_current_last_row[bank]->pop_back();
+
+  m_current_queue[bank].erase(next);
+  if (m_current_last_row[bank]->empty()) {
+    m_current_bins[bank].erase(req->row);
+    m_current_last_row[bank] = NULL;
+  }
+#ifdef DEBUG_FAST_IDEAL_SCHED
+  if (req)
+    printf("%08u : DRAM(%u) scheduling memory request to bank=%u, row=%u\n",
+           (unsigned)gpu_sim_cycle, m_dram->id, req->bk, req->row);
+#endif
+
+  if (m_config->seperate_write_queue_enabled && req->data->is_write()) {
+    assert(req != NULL && m_num_write_pending != 0);
+    m_num_write_pending--;
+  } else {
+    assert(req != NULL && m_num_pending != 0);
+    m_num_pending--;
+  }
+
+  return req;
 }
 
 void frfcfs_scheduler::print(FILE *fp) {
@@ -222,6 +221,7 @@ void frfcfs_scheduler::print(FILE *fp) {
 void dram_t::scheduler_frfcfs() {
   unsigned mrq_latency;
   frfcfs_scheduler *sched = m_frfcfs_scheduler;
+
   while (!mrqq->empty()) {
     dram_req_t *req = mrqq->pop();
 
@@ -238,7 +238,9 @@ void dram_t::scheduler_frfcfs() {
 
     req->data->set_status(IN_PARTITION_MC_INPUT_QUEUE,
                           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    sched->add_req(req);
+
+    //Add Request
+    sched->add_req(req, add_track_queue(req));
   }
 
   dram_req_t *req;
@@ -253,6 +255,7 @@ void dram_t::scheduler_frfcfs() {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         prio = (prio + 1) % m_config->nbk;
         bk[b]->mrq = req;
+	track_queue.remove(req); //Remove request
         if (m_config->gpgpu_memlatency_stat) {
           mrq_latency = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
                         bk[b]->mrq->timestamp;
@@ -271,3 +274,78 @@ void dram_t::scheduler_frfcfs() {
     }
   }
 }
+
+unsigned dram_t::add_track_queue(dram_req_t* new_req) {
+	
+	auto insert_pos = track_queue.end();
+	auto last_valid_same_type = track_queue.end();
+
+	int reorder_flag = 0;
+	int same_flag = 0;
+
+	for (auto it = track_queue.begin(); it != track_queue.end(); ++it) {
+		dram_req_t* existing = *it;
+
+		bool same_type = (existing->data->is_write() == new_req->data->is_write());
+		bool same_age_check = (AGE_GAP >= new_req->timestamp - existing->timestamp);
+
+		if (same_type && same_age_check) {
+			last_valid_same_type = it;
+			same_flag = 1;
+		}
+	}
+
+	if (last_valid_same_type != track_queue.end()) {
+
+		auto next = std::next(last_valid_same_type);
+
+		if (next != track_queue.end()) {
+			dram_req_t* after = *next;
+			bool diff_type = (after->data->is_write() != new_req->data->is_write());
+			bool diff_age_check = (AGE_GAP >= new_req->timestamp - after->timestamp);
+
+			if (diff_type && diff_age_check) {
+				insert_pos = next;
+				reorder_flag = 1;
+			} else {
+				insert_pos = track_queue.end();
+			}
+		} else {
+			insert_pos = track_queue.end();
+		}
+	}
+
+	track_queue.insert(insert_pos, new_req);
+
+	unsigned same_bank_rank = 0;
+	unsigned queue_rank = 0;
+
+	for (auto it = track_queue.begin(); it != track_queue.end(); ++it) {
+
+		dram_req_t* req = *it;
+		queue_rank++;
+
+		if (req->bk == new_req->bk) {
+			same_bank_rank++;
+
+			if (req == new_req) {
+				break;
+			}
+		}
+	}
+        
+	/*
+	FILE *f = fopen("RS_log.txt", "a");
+	if (reorder_flag == 1) {
+		fprintf(f, "[Reorder Success] Bank: %2u || Bank Position: %2u || Queue Position: %2u\n", new_req->bk, same_bank_rank, queue_rank);
+	} else if (same_flag == 1) {
+		fprintf(f, "[Reorder Failed] Same Type Detected || Current Queue Size: %zu\n", track_queue.size());
+	} else {
+		fprintf(f, "[Reorder Failed] Nothing Happened || Current Queue Size: %zu\n", track_queue.size());
+	}
+	fclose(f);
+        */
+
+	return same_bank_rank;
+}
+

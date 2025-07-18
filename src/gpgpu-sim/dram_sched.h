@@ -28,6 +28,7 @@
 
 #ifndef dram_sched_h_INCLUDED
 #define dram_sched_h_INCLUDED
+#define AGE_GAP 40
 
 #include <list>
 #include <map>
@@ -42,14 +43,12 @@ class frfcfs_scheduler {
  public:
   frfcfs_scheduler(const memory_config *config, dram_t *dm,
                    memory_stats_t *stats);
-  void add_req(dram_req_t *req);
+  void add_req(dram_req_t *req, unsigned insert_offset);
   void data_collection(unsigned bank);
   dram_req_t *schedule(unsigned bank, unsigned curr_row);
   void print(FILE *fp);
   unsigned num_pending() const { return m_num_pending; }
   unsigned num_write_pending() const { return m_num_write_pending; }
-
-  void update_counters(dram_req_t* req, unsigned bank);
 
  private:
   const memory_config *m_config;
@@ -70,18 +69,6 @@ class frfcfs_scheduler {
 
   enum memory_mode m_mode;
   memory_stats_t *m_stats;
-
-  enum reorder_state_t { REORDER_READ_PHASE, REORDER_WRITE_PHASE };
-
-  std::vector<bool> m_last_is_write; 
-  std::vector<bool> m_last_valid; 
-
-  reorder_state_t m_reorder_state;
-  unsigned        m_batch_left;
-  static const unsigned REORDER_BATCH = 8;
-
-  static const unsigned AGE_EPS = 10;
-
 };
 
 #endif

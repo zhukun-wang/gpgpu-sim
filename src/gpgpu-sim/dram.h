@@ -43,7 +43,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <deque>
 #include "delayqueue.h"
+#include <list>
 
 #define READ 'R'  // define read and write states
 #define WRITE 'W'
@@ -68,8 +70,6 @@ class dram_req_t {
   unsigned int insertion_time;
   class mem_fetch *data;
   class gpgpu_sim *m_gpu;
-
-  unsigned long long sched_enqueue_cycle;
 };
 
 struct bankgrp_t {
@@ -143,6 +143,8 @@ class dram_t {
                             unsigned &wr, unsigned &wr_WB, unsigned &req) const;
 
   const memory_config *m_config;
+
+  std::list<dram_req_t*> track_queue;
 
  private:
   bankgrp_t **bkgrp;
@@ -247,6 +249,8 @@ class dram_t {
   class Stats *mrqq_Dist;  // memory request queue inside DRAM
 
   friend class frfcfs_scheduler;
+
+  unsigned add_track_queue(dram_req_t* req);
 };
 
 #endif /*DRAM_H*/
