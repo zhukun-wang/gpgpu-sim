@@ -159,6 +159,24 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
     mrqq_Dist = StatCreate("mrqq_length", 1, queue_limit());
   else                                             // queue length is unlimited;
     mrqq_Dist = StatCreate("mrqq_length", 1, 64);  // track up to 64 entries
+  
+  track_queue.clear();
+
+  last_valid_read_it = track_queue.end();
+  last_valid_write_it = track_queue.end(); 
+  last_valid_read_ts = 0;
+  last_valid_write_ts = 0;
+
+  read_after_write_it = track_queue.end();
+  read_after_write_exists = false;
+  read_after_write_time = 0;
+
+  write_after_read_it = track_queue.end();
+  write_after_read_exists = false;
+  write_after_read_time = 0;
+
+  num_reads_in_queue = 0;
+  num_writes_in_queue = 0;
 }
 
 bool dram_t::full(bool is_write) const {

@@ -251,6 +251,22 @@ class dram_t {
   friend class frfcfs_scheduler;
 
   unsigned add_track_queue(dram_req_t* req);
+
+  std::list<dram_req_t*>::iterator last_valid_read_it;
+  std::list<dram_req_t*>::iterator last_valid_write_it;
+  unsigned last_valid_read_ts = 0;
+  unsigned last_valid_write_ts = 0;
+  
+  std::list<dram_req_t*>::iterator read_after_write_it;
+  bool read_after_write_exists = false;
+  unsigned read_after_write_time = 0;
+
+  std::list<dram_req_t*>::iterator write_after_read_it;
+  bool write_after_read_exists = false;
+  unsigned write_after_read_time = 0;
+
+  unsigned num_reads_in_queue = 0;
+  unsigned num_writes_in_queue = 0;
 };
 
 #endif /*DRAM_H*/
