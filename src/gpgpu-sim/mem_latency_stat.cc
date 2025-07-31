@@ -190,6 +190,11 @@ unsigned memory_stats_t::memlatstat_done(mem_fetch *mf) {
   unsigned mf_latency;
   mf_latency =
       (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) - mf->get_timestamp();
+  
+  FILE *f = fopen("latency_report.txt", "a");
+  fprintf(f, "%u\n", mf_latency);
+  fclose(f);
+
   mf_num_lat_pw++;
   mf_tot_lat_pw += mf_latency;
   unsigned idx = LOGB2(mf_latency);
@@ -208,6 +213,11 @@ void memory_stats_t::memlatstat_read_done(mem_fetch *mf) {
     unsigned mf_latency;
     mf_latency =
         (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) - mf->get_timestamp();
+    
+    FILE *f = fopen("latency_report.txt", "a");
+    fprintf(f, "%u\n", mf_latency);
+    fclose(f);
+
     num_mfs++;
     mf_total_lat += mf_latency;
     if (mf_latency > max_mf_latency) max_mf_latency = mf_latency;

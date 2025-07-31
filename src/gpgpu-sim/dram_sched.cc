@@ -84,15 +84,24 @@ void frfcfs_scheduler::add_req(dram_req_t *req, unsigned insert_offset) {
     auto &queue = m_queue[req->bk];
     std::list<dram_req_t *>::iterator pos;
 
+    int i = static_cast<int>(insert_offset) - 1;
+
+    //if (insert_offset == 0 || insert_offset > queue.size()) {
     if (insert_offset == 0) {
+    	//printf("Insert Offset = 0\n");
+	pos = queue.begin();
+    } else if (insert_offset > queue.size()){
     	pos = queue.begin();
+	FILE *f = fopen("RS_log.txt", "a");
+        fprintf(f, "[Tail Insert] Bank: %2u Insert Offset: %2u Queue Size: %zu\n", req->bk, insert_offset, queue.size());
+        fclose(f);
     } else {
-    	if (queue.size() >= insert_offset) {
-    		pos = queue.end();
-		std::advance(pos, -insert_offset+1);
-    	} else {
-	    	pos = queue.begin();
-    	}
+    	pos = queue.end();
+
+	FILE *f = fopen("RS_log.txt", "a");
+	fprintf(f, "[Middle Insert] Bank: %2u Insert Offset: %2u Queue Size: %zu\n", req->bk, insert_offset, queue.size());
+	fclose(f);
+    	std::advance(pos, -i);	
     }
 
     auto ptr = queue.insert(pos, req);
@@ -244,11 +253,12 @@ void dram_t::scheduler_frfcfs() {
                           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
     //Add Request
-    sched->add_req(req, add_track_queue(req));
+    //sched->add_req(req, add_track_queue(req));
+    sched->add_req(req, 0);
 
-    if (req->data->get_type() == WRITE_REQUEST) {
+    if (req->data->is_write()) {
     	num_writes_in_queue++;
-    } else if (req->data->get_type() == READ_REQUEST) {
+    } else {
     	num_reads_in_queue++;
     }
   }
@@ -267,9 +277,9 @@ void dram_t::scheduler_frfcfs() {
         bk[b]->mrq = req;
 	
 	track_queue.remove(req); //Remove request
-	if (req->data->get_type() == WRITE_REQUEST) {
+	if (req->data->is_write()) {
         	num_writes_in_queue--;
-    	} else if (req->data->get_type() == READ_REQUEST) {
+    	} else {
         	num_reads_in_queue--;
     	}
 
@@ -295,102 +305,52 @@ void dram_t::scheduler_frfcfs() {
 unsigned dram_t::add_track_queue(dram_req_t* new_req) {
 	
 	auto insert_pos = track_queue.end();
-
-	bool is_write = new_req->data->is_write();
-	unsigned long long ts = new_req->timestamp;
-
-	std::list<dram_req_t*>::iterator last_it;
-	unsigned long long last_ts;
+	auto last_valid_same_type = track_queue.end();
 
 	int reorder_flag = 0;
 	int same_flag = 0;
 
-	int read_after_write_update = 0;
-	int write_after_read_update = 0;
-
-	if (num_writes_in_queue == 0) {
-		last_valid_write_it = track_queue.end();
-		write_after_read_exists = false;
-		write_after_read_it = track_queue.end();
-		read_after_write_exists = false;
-                read_after_write_it = track_queue.end();
-	}
-
-	if (num_reads_in_queue == 0) {
-                last_valid_read_it = track_queue.end();
-		read_after_write_exists = false;
-		read_after_write_it = track_queue.end();
-		write_after_read_exists = false;
-                write_after_read_it = track_queue.end();
-        }
-
-
-	if (is_write) {
-		last_it = last_valid_write_it;
-		last_ts = last_valid_write_ts;
-	} else {
-		last_it = last_valid_read_it;
-		last_ts = last_valid_read_ts;
-	}
-
 	bool found_insert_point = false;
 
-	if (last_it != track_queue.end() && (AGE_GAP >= ts - last_ts)) {
-		if (is_write) {
-			if (read_after_write_exists) {
-				if (AGE_GAP >= ts - read_after_write_time) {
-					insert_pos = read_after_write_it;
-					found_insert_point = true;
+	if ((new_req->data->is_write() && num_writes_in_queue != 0) || (!new_req->data->is_write() && num_reads_in_queue != 0)) {
+		for (auto rit = track_queue.rbegin(); rit != track_queue.rend(); ++rit) {
+    			dram_req_t* existing = *rit;
+
+    			bool same_type = (existing->data->is_write() == new_req->data->is_write());
+    			bool same_age_check = (AGE_GAP >= new_req->timestamp - existing->timestamp);
+
+    			if (same_type) {
+			       	if (same_age_check) {
+        				last_valid_same_type = std::prev(rit.base()); 
+        				same_flag = 1;
 				}
+				break;
+    			}
+		}
+	}
+
+	if (last_valid_same_type != track_queue.end()) {
+		auto next = std::next(last_valid_same_type);
+
+		if (next != track_queue.end()) {
+			dram_req_t* after = *next;
+			bool diff_type = (after->data->is_write() != new_req->data->is_write());
+			bool diff_age_check = (AGE_GAP >= new_req->timestamp - after->timestamp);
+
+			if (diff_type && diff_age_check) {
+				insert_pos = next;
+				found_insert_point = true;
+				reorder_flag = 1;
+				reorder_num++;
+			} else {
+				insert_pos = track_queue.end();
 			}
 		} else {
-			if (write_after_read_exists) {
-                                if (AGE_GAP >= ts - write_after_read_time) {
-                                        insert_pos = write_after_read_it;
-					found_insert_point = true;
-                                }
-                        }
+			insert_pos = track_queue.end();
 		}
 	}
 
-	if (!found_insert_point) {
-		if (!track_queue.empty()) {
-			if (is_write) {
-				read_after_write_exists = false;
-				if (!track_queue.back()->data->is_write()) {
-					write_after_read_exists = true;
-					write_after_read_update = 1;
-				}
-			} else {
-				write_after_read_exists = false;
-				if (track_queue.back()->data->is_write()) {
-					read_after_write_exists = true;
-					read_after_write_update = 1;
-				}
-			}
-		}
-		insert_pos = track_queue.end();
-	}
-
-	auto inserted_it = track_queue.insert(insert_pos, new_req);
-
-	if (is_write) {
-		last_valid_write_it = inserted_it;
-		last_valid_write_ts = ts;
-
-		if(write_after_read_update) {
-			write_after_read_it = inserted_it;
-			write_after_read_time = ts;
-		}
-	} else {
-		last_valid_read_it = inserted_it;
-		last_valid_read_ts = ts;
-
-		if(read_after_write_update) {
-                        read_after_write_it = inserted_it;
-                        read_after_write_time = ts;
-                }
-	}
+	track_queue.insert(insert_pos, new_req);
 
 	unsigned same_bank_rank = 0;
 	unsigned queue_rank = 0;
@@ -398,6 +358,7 @@ unsigned dram_t::add_track_queue(dram_req_t* new_req) {
 	if (found_insert_point) {
 		for (auto it = track_queue.begin(); it != track_queue.end(); ++it) {
 			dram_req_t* req = *it;
+			queue_rank++;
 			if (req->bk == new_req->bk) {
 				same_bank_rank++;
 				if (req == new_req) {
@@ -405,19 +366,21 @@ unsigned dram_t::add_track_queue(dram_req_t* new_req) {
 				}
 			}
 		}
+	} else {
+		same_bank_rank = 0;
 	}
         
-	/*
+	
 	FILE *f = fopen("RS_log.txt", "a");
 	if (reorder_flag == 1) {
 		fprintf(f, "[Reorder Success] Bank: %2u || Bank Position: %2u || Queue Position: %2u\n", new_req->bk, same_bank_rank, queue_rank);
-	} else if (same_flag == 1) {
-		fprintf(f, "[Reorder Failed] Same Type Detected || Current Queue Size: %zu\n", track_queue.size());
-	} else {
-		fprintf(f, "[Reorder Failed] Nothing Happened || Current Queue Size: %zu\n", track_queue.size());
+	//} else if (same_flag == 1) {
+	//	fprintf(f, "[Reorder Failed] Same Type Detected || Current Queue Size: %zu\n", track_queue.size());
+	//} else {
+	//	fprintf(f, "[Reorder Failed] Nothing Happened || Current Queue Size: %zu\n", track_queue.size());
 	}
 	fclose(f);
-        */
+        
 
 	return same_bank_rank;
 }

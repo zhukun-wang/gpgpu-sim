@@ -28,7 +28,7 @@
 
 #ifndef dram_sched_h_INCLUDED
 #define dram_sched_h_INCLUDED
-#define AGE_GAP 40
+#define AGE_GAP 500
 
 #include <list>
 #include <map>

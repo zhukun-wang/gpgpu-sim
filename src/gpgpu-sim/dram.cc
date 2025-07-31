@@ -62,6 +62,7 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   write_num = 0;
   hits_read_num = 0;
   hits_write_num = 0;
+  reorder_num = 0;
   banks_1time = 0;
   banks_acess_total = 0;
   banks_acess_total_after = 0;
@@ -166,14 +167,6 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   last_valid_write_it = track_queue.end(); 
   last_valid_read_ts = 0;
   last_valid_write_ts = 0;
-
-  read_after_write_it = track_queue.end();
-  read_after_write_exists = false;
-  read_after_write_time = 0;
-
-  write_after_read_it = track_queue.end();
-  write_after_read_exists = false;
-  write_after_read_time = 0;
 
   num_reads_in_queue = 0;
   num_writes_in_queue = 0;
@@ -762,6 +755,8 @@ void dram_t::print(FILE *simFile) const {
   printf("CCDLc_limit_alone = %llu \n", CCDLc_limit_alone);
   printf("WTRc_limit_alone = %llu \n", WTRc_limit_alone);
   printf("RTWc_limit_alone = %llu \n", RTWc_limit_alone);
+  printf("Row_Hit Number = %llu \n", hits_num);
+   printf("Reorder_Number = %llu \n", reorder_num);
 
   printf("\nCommands details: \n");
   printf("total_CMD = %llu \n", n_cmd);
