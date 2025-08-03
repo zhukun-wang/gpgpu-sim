@@ -362,7 +362,7 @@ void memory_partition_unit::dram_cycle() {
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
       if (m_dram->full(mf->is_write())) break;
 
-      FILE *f = fopen("memory_access.txt", "a");
+      //FILE *f = fopen("memory_access.txt", "a");
 
       enum mem_access_type type = mf->get_access_type();
       //unsigned global_spid = mf->get_sub_partition_id();
@@ -372,8 +372,8 @@ void memory_partition_unit::dram_cycle() {
 
       //fprintf(f, "Time: %8llu cycles Sub Partition: %2u    || ",m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, global_spid);
 
-      fprintf(f, "%2u || %2u || %8llu || ", tlx.chip, tlx.bk, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-
+      //fprintf(f, "%2u || %2u || %8llu || ", tlx.chip, tlx.bk, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      /*
       switch (type) {
           case GLOBAL_ACC_R:
               fprintf(f, "Access Type:  Read Global Memory     || "); break;
@@ -398,9 +398,9 @@ void memory_partition_unit::dram_cycle() {
     	  default:
               fprintf(f, "Access Type:  UNKNOWN                || "); break;
       }
-
-      fprintf(f, "size: %4u   addr: 0x%llx\n",mf->get_data_size(), mf->get_addr());
-      fclose(f);
+     */
+     //fprintf(f, "size: %4u   addr: 0x%llx\n",mf->get_data_size(), mf->get_addr());
+     //fclose(f);
 
      // if (mf->is_write()) {
      //   m_sub_partition[spid]->L2_dram_queue_pop();

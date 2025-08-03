@@ -146,6 +146,8 @@ class dram_t {
 
   std::list<dram_req_t*> track_queue;
 
+
+
  private:
   bankgrp_t **bkgrp;
 
@@ -217,6 +219,7 @@ class dram_t {
   unsigned long long hits_read_num;
   unsigned long long hits_write_num;
   unsigned long long reorder_num;
+  unsigned long long switch_num;
   unsigned long long banks_1time;
   unsigned long long banks_acess_total;
   unsigned long long banks_acess_total_after;
@@ -260,6 +263,10 @@ class dram_t {
   
   unsigned num_reads_in_queue = 0;
   unsigned num_writes_in_queue = 0;
+
+  fifo_pipeline<dram_req_t>* readyq;
+  unsigned pending_rw_switch_counter = 0;
+  bool rw_switch_pending = false;
 };
 
 #endif /*DRAM_H*/

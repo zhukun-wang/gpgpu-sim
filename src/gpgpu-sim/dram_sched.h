@@ -28,7 +28,7 @@
 
 #ifndef dram_sched_h_INCLUDED
 #define dram_sched_h_INCLUDED
-#define AGE_GAP 500
+#define AGE_GAP 10000
 
 #include <list>
 #include <map>
@@ -49,6 +49,7 @@ class frfcfs_scheduler {
   void print(FILE *fp);
   unsigned num_pending() const { return m_num_pending; }
   unsigned num_write_pending() const { return m_num_write_pending; }
+  dram_req_t* fcfs(unsigned bank);
 
  private:
   const memory_config *m_config;

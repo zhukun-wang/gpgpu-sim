@@ -268,7 +268,8 @@ void dram_t::scheduler_frfcfs() {
   for (i = 0; i < m_config->nbk; i++) {
     unsigned b = (i + prio) % m_config->nbk;
     if (!bk[b]->mrq) {
-      req = sched->schedule(b, bk[b]->curr_row);
+      //req = sched->schedule(b, bk[b]->curr_row);
+      req = sched->fcfs(b);
 
       if (req) {
         req->data->set_status(IN_PARTITION_MC_BANK_ARB_QUEUE,
@@ -385,4 +386,12 @@ unsigned dram_t::add_track_queue(dram_req_t* new_req) {
 	return same_bank_rank;
 }
 
+dram_req_t* frfcfs_scheduler::fcfs(unsigned bank) {
+    if (m_queue[bank].empty()) return nullptr;
 
+    dram_req_t* req = m_queue[bank].back();  // oldest request
+    m_queue[bank].pop_back();
+    m_num_pending--;
+
+    return req;
+}

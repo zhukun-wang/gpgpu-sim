@@ -63,6 +63,7 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   hits_read_num = 0;
   hits_write_num = 0;
   reorder_num = 0;
+  switch_num = 0;
   banks_1time = 0;
   banks_acess_total = 0;
   banks_acess_total_after = 0;
@@ -117,6 +118,7 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   prio = 0;
 
   rwq = new fifo_pipeline<dram_req_t>("rwq", m_config->CL, m_config->CL + 1);
+  readyq = new fifo_pipeline<dram_req_t>("readyq", 0, 2);
   mrqq = new fifo_pipeline<dram_req_t>("mrqq", 0, 2);
   returnq = new fifo_pipeline<mem_fetch>(
       "dramreturnq", 0,
@@ -459,6 +461,20 @@ void dram_t::cycle() {
     }
   }
 
+  if (!readyq->empty()) {
+    if (!rw_switch_pending) {
+        dram_req_t* ready_req = readyq->pop();
+        rwq->push(ready_req);
+    } else {
+        if (pending_rw_switch_counter <= 1) {
+            rw_switch_pending = false;
+        } else {
+            pending_rw_switch_counter--;
+        }
+    }
+  }
+
+
   issued = issued_row_cmd || issued_col_cmd;
   if (!issued) {
     n_nop++;
@@ -572,12 +588,24 @@ bool dram_t::issue_col_command(int j) {
     // correct row activated for a READ
     if (!issued && !CCDc && !bk[j]->RCDc && !(bkgrp[grp]->CCDLc) &&
         (bk[j]->curr_row == bk[j]->mrq->row) && (bk[j]->mrq->rw == READ) &&
-        (WTRc == 0) && (bk[j]->state == BANK_ACTIVE) && !rwq->full()) {
+        (bk[j]->state == BANK_ACTIVE) && !readyq->full() && !rwq->full()) {
       if (rw == WRITE) {
         rw = READ;
+	switch_num++;
+	pending_rw_switch_counter = m_config->tRTW;
+	rw_switch_pending = true;
         rwq->set_min_length(m_config->CL);
       }
-      rwq->push(bk[j]->mrq);
+
+      FILE *f = fopen("memory_access.txt", "a");
+
+      fprintf(f, "[DRAM Issue] Dram: %u Time: %llu Type: READ\n", id, (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle));
+
+      fclose(f);
+      
+      //rwq->push(bk[j]->mrq);
+      readyq->push(bk[j]->mrq);
+
       bk[j]->mrq->txbytes += m_config->dram_atom_size;
       CCDc = m_config->tCCD;
       bkgrp[grp]->CCDLc = m_config->tCCDL;
@@ -607,12 +635,23 @@ bool dram_t::issue_col_command(int j) {
       // correct row activated for a WRITE
       if (!issued && !CCDc && !bk[j]->RCDWRc && !(bkgrp[grp]->CCDLc) &&
           (bk[j]->curr_row == bk[j]->mrq->row) && (bk[j]->mrq->rw == WRITE) &&
-          (RTWc == 0) && (bk[j]->state == BANK_ACTIVE) && !rwq->full()) {
+          (bk[j]->state == BANK_ACTIVE) && !readyq->full() && !rwq->full()) {
         if (rw == READ) {
           rw = WRITE;
           rwq->set_min_length(m_config->WL);
+	  switch_num++;
+	  pending_rw_switch_counter = m_config->tWTR;
+          rw_switch_pending = true;
         }
-        rwq->push(bk[j]->mrq);
+
+      FILE *f = fopen("memory_access.txt", "a");
+
+      fprintf(f, "[DRAM Issue] Dram: %u Time: %llu Type: WRITE\n", id, (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle));
+
+      fclose(f);
+
+        //rwq->push(bk[j]->mrq);
+	readyq->push(bk[j]->mrq);
 
         bk[j]->mrq->txbytes += m_config->dram_atom_size;
         CCDc = m_config->tCCD;
@@ -755,8 +794,9 @@ void dram_t::print(FILE *simFile) const {
   printf("CCDLc_limit_alone = %llu \n", CCDLc_limit_alone);
   printf("WTRc_limit_alone = %llu \n", WTRc_limit_alone);
   printf("RTWc_limit_alone = %llu \n", RTWc_limit_alone);
-  printf("Row_Hit Number = %llu \n", hits_num);
-   printf("Reorder_Number = %llu \n", reorder_num);
+  printf("Row Hit Number = %llu \n", hits_num);
+  printf("Reorder Number = %llu \n", reorder_num);
+  printf("R/W Switch Number = %llu \n", switch_num);
 
   printf("\nCommands details: \n");
   printf("total_CMD = %llu \n", n_cmd);
