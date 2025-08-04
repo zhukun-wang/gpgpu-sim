@@ -446,30 +446,46 @@ void dram_t::cycle() {
     // single bus interface
     // issue only one row/column command
     for (unsigned i = 0; i < m_config->nbk; i++) {
+      if (issued_col_cmd) break;
       unsigned j = (i + prio) % m_config->nbk;
-      if (!issued_col_cmd) issued_col_cmd = issue_col_command(j);
+      if (bk[j]->mrq && bk[j]->mrq->rw == rw) {
+           if (!issued_col_cmd) issued_col_cmd = issue_col_command(j);
 
-      if (!issued_col_cmd && !issued_row_cmd)
-        issued_row_cmd = issue_row_command(j);
-
-      if (!bk[j]->mrq) {
-        if (!CCDc && !RRDc && !RTWc && !WTRc && !bk[j]->RCDc && !bk[j]->RASc &&
-            !bk[j]->RCc && !bk[j]->RPc && !bk[j]->RCDWRc)
-          k--;
-        bk[j]->n_idle++;
+           if (!issued_col_cmd && !issued_row_cmd)
+              issued_row_cmd = issue_row_command(j);
       }
     }
-  }
+
+    for (unsigned i = 0; i < m_config->nbk; i++) {
+      if (issued_col_cmd) break;
+      unsigned j = (i + prio) % m_config->nbk;
+      if (bk[j]->mrq && bk[j]->mrq->rw != rw) {
+           if (!issued_col_cmd) issued_col_cmd = issue_col_command(j);
+
+           if (!issued_col_cmd && !issued_row_cmd)
+              issued_row_cmd = issue_row_command(j);
+      }
+    }
+
+    for (unsigned j = 0; j < m_config->nbk; j++) {
+      if (!bk[j]->mrq) {
+         if (!CCDc && !RRDc && !RTWc && !WTRc && !bk[j]->RCDc && !bk[j]->RASc &&
+             !bk[j]->RCc && !bk[j]->RPc && !bk[j]->RCDWRc)
+           k--;
+         bk[j]->n_idle++;
+      }
+    }
+
+}
 
   if (!readyq->empty()) {
     if (!rw_switch_pending) {
         dram_req_t* ready_req = readyq->pop();
         rwq->push(ready_req);
     } else {
-        if (pending_rw_switch_counter <= 1) {
+        pending_rw_switch_counter--;
+	if (pending_rw_switch_counter == 0) {
             rw_switch_pending = false;
-        } else {
-            pending_rw_switch_counter--;
         }
     }
   }
