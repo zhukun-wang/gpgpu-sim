@@ -253,8 +253,9 @@ void dram_t::scheduler_frfcfs() {
                           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
     //Add Request
-    //sched->add_req(req, add_track_queue(req));
+    
     sched->add_req(req, 0);
+    //sched->add_req(req, add_track_queue(req));
 
     if (req->data->is_write()) {
     	num_writes_in_queue++;

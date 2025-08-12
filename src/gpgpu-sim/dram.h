@@ -146,6 +146,9 @@ class dram_t {
 
   std::list<dram_req_t*> track_queue;
 
+  void issue_cmd(bool &issued_row_cmd, bool &issued_col_cmd, unsigned &k);
+  void issue_cmd_reorder(bool &issued_row_cmd, bool &issued_col_cmd, unsigned &k);
+
 
 
  private:

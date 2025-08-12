@@ -445,37 +445,9 @@ void dram_t::cycle() {
   } else {
     // single bus interface
     // issue only one row/column command
-    for (unsigned i = 0; i < m_config->nbk; i++) {
-      if (issued_col_cmd) break;
-      unsigned j = (i + prio) % m_config->nbk;
-      if (bk[j]->mrq && bk[j]->mrq->rw == rw) {
-           if (!issued_col_cmd) issued_col_cmd = issue_col_command(j);
 
-           if (!issued_col_cmd && !issued_row_cmd)
-              issued_row_cmd = issue_row_command(j);
-      }
-    }
-
-    for (unsigned i = 0; i < m_config->nbk; i++) {
-      if (issued_col_cmd) break;
-      unsigned j = (i + prio) % m_config->nbk;
-      if (bk[j]->mrq && bk[j]->mrq->rw != rw) {
-           if (!issued_col_cmd) issued_col_cmd = issue_col_command(j);
-
-           if (!issued_col_cmd && !issued_row_cmd)
-              issued_row_cmd = issue_row_command(j);
-      }
-    }
-
-    for (unsigned j = 0; j < m_config->nbk; j++) {
-      if (!bk[j]->mrq) {
-         if (!CCDc && !RRDc && !RTWc && !WTRc && !bk[j]->RCDc && !bk[j]->RASc &&
-             !bk[j]->RCc && !bk[j]->RPc && !bk[j]->RCDWRc)
-           k--;
-         bk[j]->n_idle++;
-      }
-    }
-
+    issue_cmd(issued_row_cmd, issued_col_cmd, k);
+    //issue_cmd_reorder(issued_row_cmd, issued_col_cmd, k);
 }
 
   if (!readyq->empty()) {
@@ -948,4 +920,56 @@ unsigned dram_t::get_bankgrp_number(unsigned i) {
     assert(1);
   }
   return 0;  // we should never get here
+}
+
+void dram_t::issue_cmd_reorder(bool &issued_row_cmd, bool &issued_col_cmd, unsigned &k) {
+  // Phase 1: try issuing column/row command with current rw direction
+  for (unsigned i = 0; i < m_config->nbk; i++) {
+    if (issued_col_cmd) break;
+    unsigned j = (i + prio) % m_config->nbk;
+    if (bk[j]->mrq && bk[j]->mrq->rw == rw) {
+      issued_col_cmd = issue_col_command(j);
+      if (!issued_col_cmd && !issued_row_cmd)
+        issued_row_cmd = issue_row_command(j);
+    }
+  }
+
+  // Phase 2: try issuing commands with opposite rw direction
+  for (unsigned i = 0; i < m_config->nbk; i++) {
+    if (issued_col_cmd) break;
+    unsigned j = (i + prio) % m_config->nbk;
+    if (bk[j]->mrq && bk[j]->mrq->rw != rw) {
+      issued_col_cmd = issue_col_command(j);
+      if (!issued_col_cmd && !issued_row_cmd)
+        issued_row_cmd = issue_row_command(j);
+    }
+  }
+
+  // Phase 3: count idle banks
+  for (unsigned j = 0; j < m_config->nbk; j++) {
+    if (!bk[j]->mrq) {
+      if (!CCDc && !RRDc && !RTWc && !WTRc &&
+          !bk[j]->RCDc && !bk[j]->RASc &&
+          !bk[j]->RCc && !bk[j]->RPc && !bk[j]->RCDWRc)
+        k--;
+      bk[j]->n_idle++;
+    }
+  }
+}
+
+void dram_t::issue_cmd(bool &issued_row_cmd, bool &issued_col_cmd, unsigned &k) {
+    for (unsigned i = 0; i < m_config->nbk; i++) {
+      unsigned j = (i + prio) % m_config->nbk;
+      if (!issued_col_cmd) issued_col_cmd = issue_col_command(j);
+
+      if (!issued_col_cmd && !issued_row_cmd)
+        issued_row_cmd = issue_row_command(j);
+
+      if (!bk[j]->mrq) {
+        if (!CCDc && !RRDc && !RTWc && !WTRc && !bk[j]->RCDc && !bk[j]->RASc &&
+            !bk[j]->RCc && !bk[j]->RPc && !bk[j]->RCDWRc)
+          k--;
+        bk[j]->n_idle++;
+      }
+    }
 }
