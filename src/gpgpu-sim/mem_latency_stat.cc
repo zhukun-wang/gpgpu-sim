@@ -190,6 +190,11 @@ unsigned memory_stats_t::memlatstat_done(mem_fetch *mf) {
   unsigned mf_latency;
   mf_latency =
       (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) - mf->get_timestamp();
+  
+  FILE *f = fopen("latency_report.txt", "a");
+  fprintf(f, "%u\n", mf_latency);
+  fclose(f);
+
   mf_num_lat_pw++;
   mf_tot_lat_pw += mf_latency;
   unsigned idx = LOGB2(mf_latency);
@@ -208,6 +213,11 @@ void memory_stats_t::memlatstat_read_done(mem_fetch *mf) {
     unsigned mf_latency;
     mf_latency =
         (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) - mf->get_timestamp();
+
+    FILE *f = fopen("latency_report.txt", "a");
+    fprintf(f, "%u\n", mf_latency);
+    fclose(f);
+
     num_mfs++;
     mf_total_lat += mf_latency;
     if (mf_latency > max_mf_latency) max_mf_latency = mf_latency;
@@ -537,3 +547,28 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
     printf("\naverage position of mrq chosen = %f\n", (float)l / k);
   }
 }
+
+void memory_stats_t::report_throughput(unsigned long long current_cycle) {
+
+    int cycle_resolution = 500;
+
+    if (current_cycle % cycle_resolution == 0 && current_cycle != last_print_cycle) {
+
+        FILE* log = fopen("throughput_report.txt", "a");
+
+        //fprintf(log, "%12llu   ", current_cycle);
+        fprintf(log, "%8.3f   ", ((double)L2_to_DRAM_bytes * 1.132) / cycle_resolution);
+        fprintf(log, "%8.3f   ",((double)DRAM_to_L2_bytes * 1.132) / cycle_resolution);
+        fprintf(log, "%8.3f\n", (((double)L2_to_DRAM_bytes + (double)DRAM_to_L2_bytes) * 1.132) / cycle_resolution);
+        //fprintf(log, "%5llu   %5llu\n", read_count, write_count);
+
+        fclose(log);
+
+        L2_to_DRAM_bytes = 0;
+        DRAM_to_L2_bytes = 0;
+        //read_count = 0;
+        //write_count = 0;
+        last_print_cycle = current_cycle;
+    }
+}
+

@@ -130,6 +130,8 @@ class mem_fetch {
   mem_fetch *get_original_mf() { return original_mf; }
   mem_fetch *get_original_wr_mf() { return original_wr_mf; }
 
+  const mem_access_t& get_access() const { return m_access; }
+
  private:
   // request source information
   unsigned m_request_uid;

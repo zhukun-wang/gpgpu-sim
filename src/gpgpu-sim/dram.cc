@@ -48,7 +48,9 @@ template class fifo_pipeline<dram_req_t>;
 
 dram_t::dram_t(unsigned int partition_id, const memory_config *config,
                memory_stats_t *stats, memory_partition_unit *mp,
-               gpgpu_sim *gpu) {
+               gpgpu_sim *gpu) 
+: pf_table()
+{
   id = partition_id;
   m_memory_partition_unit = mp;
   m_stats = stats;
@@ -117,6 +119,10 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
 
   rwq = new fifo_pipeline<dram_req_t>("rwq", m_config->CL, m_config->CL + 1);
   mrqq = new fifo_pipeline<dram_req_t>("mrqq", 0, 2);
+
+  ready_pfq   = new fifo_pipeline<dram_req_t>("ready_pfq",   0, 1024);
+  unready_pfq = new fifo_pipeline<dram_req_t>("unready_pfq", 0, 1024);
+
   returnq = new fifo_pipeline<mem_fetch>(
       "dramreturnq", 0,
       m_config->gpgpu_dram_return_queue_size == 0
@@ -201,6 +207,8 @@ dram_req_t::dram_req_t(class mem_fetch *mf, unsigned banks,
   dqbytes = 0;
   data = mf;
   m_gpu = gpu;
+
+  is_prefetch = false;
 
   const addrdec_t &tlx = mf->get_tlx_addr();
 
@@ -288,7 +296,11 @@ void dram_t::scheduler_fifo() {
   a ^= b;
 
 void dram_t::cycle() {
-  if (!returnq->full()) {
+//FILE *f = fopen("count.txt", "a");
+//fprintf(f,"ID: %u ready_pfq size: %d unready_pfq size: %d\n", id, ready_pfq->get_length(), unready_pfq->get_length());
+//fclose(f);
+	
+if (!returnq->full()) {
     dram_req_t *cmd = rwq->pop();
     if (cmd) {
 #ifdef DRAM_VIEWCMD
@@ -301,20 +313,55 @@ void dram_t::cycle() {
         mem_fetch *data = cmd->data;
         data->set_status(IN_PARTITION_MC_RETURNQ,
                          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        if (data->get_access_type() != L1_WRBK_ACC &&
-            data->get_access_type() != L2_WRBK_ACC) {
-          data->set_reply();
-          returnq->push(data);
-        } else {
-          m_memory_partition_unit->set_done(data);
-          delete data;
-        }
+        if (cmd->is_prefetch) {
+		pf_table.mark_ready(cmd->col, cmd->row, cmd->bk, cmd->nbytes);
+		m_memory_partition_unit->set_done(data);
+		delete data;
+	} else {
+		if (data->get_access_type() != L1_WRBK_ACC &&
+            		data->get_access_type() != L2_WRBK_ACC) {
+          		data->set_reply();
+          		returnq->push(data);
+        	} else {
+          		m_memory_partition_unit->set_done(data);
+          		delete data;
+        	}
+	}
         delete cmd;
+      } else {
+		if (!ready_pfq->empty()) {
+			dram_req_t *pf_cmd = ready_pfq->pop();
+
+			pf_cmd->dqbytes += m_config->dram_atom_size;
+			if (pf_cmd->dqbytes >= pf_cmd->nbytes) {
+				mem_fetch *data = pf_cmd->data;
+        			data->set_status(IN_PARTITION_MC_RETURNQ, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+				data->set_reply();
+				returnq->push(data);
+				delete pf_cmd;
+			}
+		}
       }
 #ifdef DRAM_VIEWCMD
       printf("\n");
 #endif
     }
+  }
+
+  if (!unready_pfq->empty()) {
+	  size_t cnt = unready_pfq->get_length();
+
+	  for (size_t i = 0; i < cnt; ++i) {
+		  dram_req_t *req = unready_pfq->pop();
+
+		  match_result_t res = pf_table.match_and_consume(req->col, req->row, req->bk, req->nbytes);
+
+		  if (res.full_cover && res.all_ready) {
+			  ready_pfq->push(req);
+		  } else {
+			  unready_pfq->push(req);
+		  }
+	  }
   }
 
   /* check if the upcoming request is on an idle bank */
@@ -879,4 +926,15 @@ unsigned dram_t::get_bankgrp_number(unsigned i) {
     assert(1);
   }
   return 0;  // we should never get here
+}
+
+dram_req_t *dram_t::make_prefetch_req(unsigned bank_id, unsigned row, unsigned col, unsigned size) {
+
+    //mem_access_t acc(GLOBAL_ACC_R, 0, size, false);
+    //mem_fetch *mf = new mem_fetch(acc, nullptr, 0, 0, 0, 0, m_config);
+
+    //dram_req_t *req = new dram_req_t(mf, bank_id, row, col);
+    //req->is_prefetch = true;
+
+    //return req;
 }
