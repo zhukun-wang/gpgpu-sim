@@ -50,6 +50,11 @@ class frfcfs_scheduler {
   void print(FILE *fp);
   unsigned num_pending() const { return m_num_pending; }
   unsigned num_write_pending() const { return m_num_write_pending; }
+
+  unsigned last_detect_time;
+  unsigned seq128_num;
+  unsigned total_req_num;
+  bool chunk_sig;
   
   struct stream_entry_t {
     bool     valid = false;

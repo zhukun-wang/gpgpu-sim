@@ -46,6 +46,12 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
       new std::list<std::list<dram_req_t *>::iterator> *[m_config->nbk];
   curr_row_service_time = new unsigned[m_config->nbk];
   row_service_timestamp = new unsigned[m_config->nbk];
+
+  last_detect_time = 0;
+  seq128_num = 0;
+  total_req_num = 0;
+  chunk_sig = false;
+
   for (unsigned i = 0; i < m_config->nbk; i++) {
     m_queue[i].clear();
     m_bins[i].clear();
@@ -101,25 +107,18 @@ if (req->data->is_write()) {
 
 	  if (all_ready) {
 		  m_dram->ready_pfq->push(req);
-		  return;
 	  } else {
 		  //req->unready_list = unready_list;
 		  m_dram->unready_pfq->push(req);
-		  return;
 	  }
-   }
-
-  if (m_dram->id == 0) {
-  FILE *f = fopen("count.txt", "a");
-  fprintf(f, "Time: %u, Dram: %u Bank: %u Row: %u Col: %u\n", m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle, m_dram->id, req->bk, req->row, req->col);
-  fclose(f);
-  }
+   } else {
 
   assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
   m_num_pending++;
   m_queue[req->bk].push_front(req);
   auto ptr = m_queue[req->bk].begin();
   m_bins[req->bk][req->row].push_front(ptr);
+   }
   }
   unsigned b   = req->bk;
   unsigned row = req->row;
@@ -138,6 +137,9 @@ if (req->data->is_write()) {
   int hit = find_match_stream(m_stream_tbl[b], row, col, now);
   if (hit >= 0) {
 	  conf = update_stream(b, m_stream_tbl[b][hit], col, now);
+	  if (conf == 4) {
+		  finalize_stream_if_chunk(m_stream_tbl[b][hit]);
+	  }
 
 	  //FILE *f = fopen("count.txt", "a");
           //fprintf(f, "Row: %u Col: %u Conf: %d\n",row, col, conf);
@@ -148,10 +150,26 @@ if (req->data->is_write()) {
 	  if (m_stream_tbl[b][idx].valid) finalize_stream_if_chunk(m_stream_tbl[b][idx]);
 	  start_stream(m_stream_tbl[b][idx], row, col, now);
   }
-  
-  if (conf == PREFETCH_CONF_TH && m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size-12) {
 
-	  const unsigned burst = 4;
+  if (conf == 4) {
+	  seq128_num++;
+  }
+  total_req_num++;
+
+  if (last_detect_time - now >= 1024) {
+	  if ((seq128_num*4/total_req_num) >= 0.75) {
+	  	chunk_sig == true;
+	  } else {
+	  	chunk_sig == false;
+	  }
+	  last_detect_time = now;
+	  total_req_num = 0;
+	  seq128_num = 0;
+  }
+  
+  if (conf == 3 && chunk_sig == true && m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size-5) {
+
+	  const unsigned burst = 1;
 	  stream_entry_t& a = m_stream_tbl[b][hit]; 
 	  unsigned row = a.row;
 	  unsigned col = a.last_col;
@@ -180,7 +198,7 @@ if (req->data->is_write()) {
 				  req->data->get_original_mf(),
 				  req->data->get_original_wr_mf());
 
-		  dram_req_t *pf_req = new dram_req_t(new_mf, b, LINEAR_BK_INDEX, m_dram->m_gpu);
+		  dram_req_t *pf_req = new dram_req_t(new_mf, m_config->nbk, m_config->dram_bnk_indexing_policy, m_dram->m_gpu);
 		  pf_req->col = next_col;
 		  pf_req->is_prefetch = true;
 
@@ -191,11 +209,11 @@ if (req->data->is_write()) {
 				  pf_req->nbytes
 				 );
 
-		  //m_num_pending++;
-	  	  //assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
-    	  	  //m_queue[pf_req->bk].push_front(pf_req);
-    	  	  //std::list<dram_req_t *>::iterator ptr = m_queue[pf_req->bk].begin();
-    	  	  //m_bins[pf_req->bk][pf_req->row].push_front(ptr);
+		  m_num_pending++;
+	  	  assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
+    	  	  m_queue[pf_req->bk].push_front(pf_req);
+    	  	  std::list<dram_req_t *>::iterator ptr = m_queue[pf_req->bk].begin();
+    	  	  m_bins[pf_req->bk][pf_req->row].push_front(ptr);
   	  }
   }
 }
