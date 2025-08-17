@@ -138,6 +138,7 @@ if (req->data->is_write()) {
   if (hit >= 0) {
 	  conf = update_stream(b, m_stream_tbl[b][hit], col, now);
 	  if (conf == 4) {
+		  if (m_stream_tbl[b][hit].stride == 1) seq128_num++;
 		  finalize_stream_if_chunk(m_stream_tbl[b][hit]);
 	  }
 
@@ -151,17 +152,11 @@ if (req->data->is_write()) {
 	  start_stream(m_stream_tbl[b][idx], row, col, now);
   }
 
-  if (conf == 4) {
-	  seq128_num++;
-  }
   total_req_num++;
 
   if (last_detect_time - now >= 1024) {
-	  if ((seq128_num*4/total_req_num) >= 0.75) {
-	  	chunk_sig == true;
-	  } else {
-	  	chunk_sig == false;
-	  }
+	  double ratio = (seq128_num * 4.0) / double(total_req_num);
+	  chunk_sig = (ratio >= 0.75);    
 	  last_detect_time = now;
 	  total_req_num = 0;
 	  seq128_num = 0;
@@ -209,8 +204,8 @@ if (req->data->is_write()) {
 				  pf_req->nbytes
 				 );
 
+		  assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
 		  m_num_pending++;
-	  	  assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
     	  	  m_queue[pf_req->bk].push_front(pf_req);
     	  	  std::list<dram_req_t *>::iterator ptr = m_queue[pf_req->bk].begin();
     	  	  m_bins[pf_req->bk][pf_req->row].push_front(ptr);
@@ -435,7 +430,7 @@ int frfcfs_scheduler::update_stream(unsigned bank_id, stream_entry_t& e, unsigne
 		e.conf   = 1;
 	} else {
 		if (std::abs(delta - e.stride) <= (int)MAX_COL_GAP) {
-			if (e.conf < 255) ++e.conf;
+			if (e.conf < 4) ++e.conf;
 		} else {
 			e.stride = delta;
 			e.conf   = 1;
