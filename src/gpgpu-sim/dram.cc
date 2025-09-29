@@ -262,6 +262,17 @@ void dram_t::push(class mem_fetch *data) {
 
   data->set_status(IN_PARTITION_MC_INTERFACE_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  
+  if (!mrq->data->is_write()) {
+        const unsigned long long cyc = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        if (m_gpu) m_gpu->chunk_monitor().observe_read((uint64_t)mrq->data->get_addr(), cyc);
+
+	FILE *f = fopen("count.txt", "a");
+	fprintf(f, "Time: %u, Dram: %u Bank: %u Row: %u Col: %u Address: 0x%llx\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, id, mrq->bk, mrq->row, mrq->col, mrq->data->get_addr());
+	//fprintf(f, "0x%llx\n", mrq->data->get_addr());
+	fclose(f);
+    }
+
   mrqq->push(mrq);
 
   // stats...
@@ -314,7 +325,7 @@ if (!returnq->full()) {
         data->set_status(IN_PARTITION_MC_RETURNQ,
                          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         if (cmd->is_prefetch) {
-		pf_table.mark_ready(cmd->col, cmd->row, cmd->bk, cmd->nbytes);
+		pf_table.mark_ready(cmd->addr);
 		m_memory_partition_unit->set_done(data);
 		delete data;
 	} else {
@@ -328,7 +339,11 @@ if (!returnq->full()) {
         	}
 	}
         delete cmd;
-      } else {
+      } 
+#ifdef DRAM_VIEWCMD
+      printf("\n");
+#endif
+    } else {
 		if (!ready_pfq->empty()) {
 			dram_req_t *pf_cmd = ready_pfq->pop();
 
@@ -342,10 +357,6 @@ if (!returnq->full()) {
 			}
 		}
       }
-#ifdef DRAM_VIEWCMD
-      printf("\n");
-#endif
-    }
   }
 
   if (!unready_pfq->empty()) {
@@ -354,9 +365,9 @@ if (!returnq->full()) {
 	  for (size_t i = 0; i < cnt; ++i) {
 		  dram_req_t *req = unready_pfq->pop();
 
-		  match_result_t res = pf_table.match_and_consume(req->col, req->row, req->bk, req->nbytes);
+		  match_result_t res = pf_table.match_and_consume(req->addr);
 
-		  if (res.full_cover && res.all_ready) {
+		  if (res.matched && res.all_ready) {
 			  ready_pfq->push(req);
 		  } else {
 			  unready_pfq->push(req);

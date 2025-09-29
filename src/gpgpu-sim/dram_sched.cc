@@ -46,12 +46,6 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
       new std::list<std::list<dram_req_t *>::iterator> *[m_config->nbk];
   curr_row_service_time = new unsigned[m_config->nbk];
   row_service_timestamp = new unsigned[m_config->nbk];
-
-  last_detect_time = 0;
-  seq128_num = 0;
-  total_req_num = 0;
-  chunk_sig = false;
-
   for (unsigned i = 0; i < m_config->nbk; i++) {
     m_queue[i].clear();
     m_bins[i].clear();
@@ -79,7 +73,23 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
 }
 
 void frfcfs_scheduler::add_req(dram_req_t *req) {
-  
+/*
+  if (m_config->seperate_write_queue_enabled && req->data->is_write()) {
+    assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
+    m_num_write_pending++;
+    m_write_queue[req->bk].push_front(req);
+    std::list<dram_req_t *>::iterator ptr = m_write_queue[req->bk].begin();
+    m_write_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the
+                                                      // front
+  } else {
+    assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
+    m_num_pending++;
+    m_queue[req->bk].push_front(req);
+    std::list<dram_req_t *>::iterator ptr = m_queue[req->bk].begin();
+    m_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
+  }
+*/
+      	
 if (req->data->is_write()) {	
   if (m_config->seperate_write_queue_enabled) {
     assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
@@ -98,119 +108,91 @@ if (req->data->is_write()) {
   return;
 
   } else {
+
   auto [matched, all_ready] =
-        m_dram->pf_table.match_and_consume(req->col, req->row, req->bk, req->nbytes);
+        m_dram->pf_table.match_and_consume(req->addr);
   if (matched) {
-	  //FILE *f = fopen("count.txt", "a");
-	  //fprintf(f, "[Prefetch Hit] Dram: %u Bank: %u Row: %u Col: %u\n", m_dram->id, req->bk, req->row, req->col);
-	  //fclose(f);
+	  FILE *f = fopen("count.txt", "a");
+	  fprintf(f, "[Prefetch Hit] Dram: %u Bank: %u Row: %u Col: %u\n", m_dram->id, req->bk, req->row, req->col);
+	  fclose(f);
 
 	  if (all_ready) {
 		  m_dram->ready_pfq->push(req);
+		  return;
 	  } else {
 		  //req->unready_list = unready_list;
 		  m_dram->unready_pfq->push(req);
+		  return;
 	  }
-   } else {
+   }
 
   assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
   m_num_pending++;
   m_queue[req->bk].push_front(req);
   auto ptr = m_queue[req->bk].begin();
   m_bins[req->bk][req->row].push_front(ptr);
-   }
   }
-  unsigned b   = req->bk;
+
+  unsigned id  = req->data->get_tlx_addr().chip;
+  unsigned bk  = req->bk;
   unsigned row = req->row;
   unsigned col = req->col;
-  unsigned long long int addr = req->addr;
+  unsigned long long addr = req->addr;
   uint64_t now = m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle;
 
-  int conf = 0;
+  unsigned long long bases[] = {
+        0x00006ffb5356e000,
+        0x00006ffb5356f000,
+        0x00006ffb53571000,
+        0x00006ffb53572000
+    };
+  const unsigned long long diff = 0x5000;
+  int match = 0;
 
-  for (auto &e : m_stream_tbl[b]) {
-	  if (e.valid && now - e.last_ts > STREAM_TIMEOUT) {
-		  finalize_stream_if_chunk(e);
-	  }
-  }
+    for (int i = 0; i < 4; i++) {
+        long long delta = ((long long)addr & ~(0xFFF)) - (long long)bases[i];
+        if (llabs(delta) % diff == 0) {
+            match = 1;
+            break;
+        }
+    }
 
-  int hit = find_match_stream(m_stream_tbl[b], row, col, now);
-  if (hit >= 0) {
-	  conf = update_stream(b, m_stream_tbl[b][hit], col, now);
-	  if (conf == 4) {
-		  if (m_stream_tbl[b][hit].stride == 1) seq128_num++;
-		  finalize_stream_if_chunk(m_stream_tbl[b][hit]);
-	  }
+  if (m_num_pending <= m_config->gpgpu_frfcfs_dram_sched_queue_size - 8 && match) {
+  for(unsigned i = 1; i <= 2; i++) {
+	  addrdec_t tlx;
+	  new_addr_type tlx_addr = addr + 32*i;
 
-	  //FILE *f = fopen("count.txt", "a");
-          //fprintf(f, "Row: %u Col: %u Conf: %d\n",row, col, conf);
-          //fclose(f);
+	  m_config->m_address_mapping.addrdec_tlx(tlx_addr, &tlx);
 
-  } else {
-	  int idx = alloc_stream(m_stream_tbl[b]);
-	  if (m_stream_tbl[b][idx].valid) finalize_stream_if_chunk(m_stream_tbl[b][idx]);
-	  start_stream(m_stream_tbl[b][idx], row, col, now);
-  }
+	  if (tlx.chip==id && tlx.bk==bk && tlx.row==row) {
+		  m_dram->pf_table.insert_inflight(tlx_addr);
 
-  total_req_num++;
-
-  if (last_detect_time - now >= 1024) {
-	  double ratio = (seq128_num * 4.0) / double(total_req_num);
-	  chunk_sig = (ratio >= 0.75);    
-	  last_detect_time = now;
-	  total_req_num = 0;
-	  seq128_num = 0;
-  }
-  
-  if (conf == 3 && chunk_sig == true && m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size-5) {
-
-	  const unsigned burst = 1;
-	  stream_entry_t& a = m_stream_tbl[b][hit]; 
-	  unsigned row = a.row;
-	  unsigned col = a.last_col;
-	  unsigned stride = a.stride;
-
-	  for (unsigned i = 1; i <= burst; i++) {
-		  unsigned next_col = a.last_col + i * stride;
-			
-		  //Cross Row 
-		  //Not exist in GPGPU-sim?
-		  //if (next_col >= m_config->nbk * m_config->burst_length) {
-		  //	  next_col %= m_config->nbk * m_config->burst_length;
-		  //	  next_row++;
-		  //}
-		  
 		  mem_access_t acc = req->data->get_access();
 		  mem_fetch* new_mf = new mem_fetch(acc,
                                   &req->data->get_inst(),
-				  req->data->get_streamID(),
+                                  req->data->get_streamID(),
                                   req->data->get_ctrl_size(),
                                   req->data->get_wid(),
                                   req->data->get_sid(),
                                   req->data->get_tpc(),
                                   req->data->get_mem_config(),
-		  		  now,
-				  req->data->get_original_mf(),
-				  req->data->get_original_wr_mf());
-
+                                  now,
+                                  req->data->get_original_mf(),
+                                  req->data->get_original_wr_mf());
 		  dram_req_t *pf_req = new dram_req_t(new_mf, m_config->nbk, m_config->dram_bnk_indexing_policy, m_dram->m_gpu);
-		  pf_req->col = next_col;
+		  pf_req->col = tlx.col;
+		  pf_req->addr = tlx_addr;
 		  pf_req->is_prefetch = true;
 
-		  m_dram->pf_table.insert_inflight(
-				  pf_req->col,
-				  pf_req->row,
-				  pf_req->bk,
-				  pf_req->nbytes
-				 );
-
-		  assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
 		  m_num_pending++;
-    	  	  m_queue[pf_req->bk].push_front(pf_req);
-    	  	  std::list<dram_req_t *>::iterator ptr = m_queue[pf_req->bk].begin();
-    	  	  m_bins[pf_req->bk][pf_req->row].push_front(ptr);
-  	  }
+                  assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
+                  m_queue[pf_req->bk].push_front(pf_req);
+                  std::list<dram_req_t *>::iterator ptr = m_queue[pf_req->bk].begin();
+                  m_bins[pf_req->bk][pf_req->row].push_front(ptr);
+	  }
+  } 
   }
+
 }
 
 void frfcfs_scheduler::data_collection(unsigned int bank) {
@@ -430,7 +412,7 @@ int frfcfs_scheduler::update_stream(unsigned bank_id, stream_entry_t& e, unsigne
 		e.conf   = 1;
 	} else {
 		if (std::abs(delta - e.stride) <= (int)MAX_COL_GAP) {
-			if (e.conf < 4) ++e.conf;
+			if (e.conf < 255) ++e.conf;
 		} else {
 			e.stride = delta;
 			e.conf   = 1;

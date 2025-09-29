@@ -43,6 +43,7 @@
 #include "addrdec.h"
 #include "gpu-cache.h"
 #include "shader.h"
+#include "chunk.h"
 
 // constants for statistics printouts
 #define GPU_RSTAT_SHD_INFO 0x1
@@ -803,6 +804,12 @@ class gpgpu_sim : public gpgpu_t {
     m_functional_sim = false;
     m_functional_sim_kernel = NULL;
   }
+  
+  ChunkMonitor& chunk_monitor() { return m_chunk_monitor; }
+
+ private:
+  ChunkMonitor m_chunk_monitor;
+
 };
 
 class exec_gpgpu_sim : public gpgpu_sim {

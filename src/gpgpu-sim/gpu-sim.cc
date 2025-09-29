@@ -53,6 +53,7 @@
 #include "l2cache.h"
 #include "shader.h"
 #include "stat-tool.h"
+#include "chunk.h"
 
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
@@ -1198,6 +1199,9 @@ void gpgpu_sim::init() {
   partiton_replys_in_parallel = 0;
   partiton_reqs_in_parallel_util = 0;
   gpu_sim_cycle_parition_util = 0;
+  
+  m_chunk_monitor.reset();
+  m_chunk_monitor.enable(true);
 
 // McPAT initialization function. Called on first launch of GPU
 #ifdef GPGPUSIM_POWER_MODEL
