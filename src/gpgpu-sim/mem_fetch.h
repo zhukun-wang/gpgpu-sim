@@ -132,6 +132,12 @@ class mem_fetch {
 
   const mem_access_t& get_access() const { return m_access; }
 
+  void mark_as_prefetch() { if_prefetch = true; }
+
+  void change_addr(addrdec_t v) { m_raw_addr = v; }
+
+  bool is_prefetch() const { return if_prefetch; }
+
  private:
   // request source information
   unsigned m_request_uid;
@@ -180,6 +186,9 @@ class mem_fetch {
                      // size), so the pointer refers to the original request
   mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
                               // when fetch-on-write policy is used
+  
+  bool if_prefetch false;
+
 };
 
 #endif

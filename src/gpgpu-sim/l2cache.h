@@ -34,6 +34,7 @@
 
 #include "../abstract_hardware_model.h"
 #include "dram.h"
+#include "mc_cache.h"
 
 #include <list>
 #include <queue>
@@ -155,6 +156,12 @@ class memory_partition_unit {
   std::list<dram_delay_t> m_dram_latency_queue;
 
   class gpgpu_sim *m_gpu;
+
+  mc_sram_cache *m_mc_sram;
+
+  inline new_addr_type line_addr(new_addr_type a) const {
+    return a & ~(new_addr_type(m_config->m_L2_config.get_line_sz()) - 1ULL);
+  }
 };
 
 class memory_sub_partition {

@@ -48,6 +48,7 @@
 #include "mem_fetch.h"
 #include "mem_latency_stat.h"
 #include "shader.h"
+#include "mc_cache.h"
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
                                          mem_access_type type, unsigned size,
@@ -93,6 +94,12 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
     m_sub_partition[p] =
         new memory_sub_partition(sub_partition_id, m_config, stats, gpu);
   }
+
+  const unsigned line_sz = m_config->m_L2_config.get_line_sz();
+  const size_t   sram_bytes = 512 * 1024;
+  const unsigned assoc      = 8;
+  const unsigned hit_lat    = 2;
+  m_mc_sram = new mc_sram_cache(sram_bytes, line_sz, assoc, hit_lat);
 }
 
 void memory_partition_unit::handle_memcpy_to_gpu(
@@ -109,6 +116,8 @@ void memory_partition_unit::handle_memcpy_to_gpu(
 }
 
 memory_partition_unit::~memory_partition_unit() {
+  delete m_mc_sram;
+	
   delete m_dram;
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
        p++) {
@@ -354,7 +363,7 @@ void memory_partition_unit::dram_cycle() {
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
       if (m_dram->full(mf->is_write())) break;
       
-      if (mf->is_write()){
+      if (!mf->is_write()){
       	m_stats->L2_to_DRAM_bytes += mf->get_data_size();
       }
 

@@ -43,12 +43,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <unordered_map>
-#include <list>
-#include <cstdint>
 #include "delayqueue.h"
-#include "addrdec.h"
-#include "prefetch.h"
 
 #define READ 'R'  // define read and write states
 #define WRITE 'W'
@@ -73,8 +68,6 @@ class dram_req_t {
   unsigned int insertion_time;
   class mem_fetch *data;
   class gpgpu_sim *m_gpu;
-  bool is_prefetch;
-  //std::vector<pf_entry_t*> unready_list;
 };
 
 struct bankgrp_t {
@@ -149,21 +142,6 @@ class dram_t {
 
   const memory_config *m_config;
 
-  dram_req_t *make_prefetch_req(unsigned bank_id, unsigned row, unsigned col, unsigned size);
-
-  //struct pf_entry_t {
-  //  mem_fetch* mf;      
-  //  unsigned   bk;      
-  //  unsigned   row, col; 
-  //  unsigned   timestamp;
-  //};
-
-  //std::unordered_map<uint64_t, pf_entry_t> m_prefetch_buf;
-  //std::list<uint64_t> m_lru;
-  //size_t m_prefetch_buf_cap = 256;
-  
-  pf_table_t pf_table;
-
  private:
   bankgrp_t **bkgrp;
 
@@ -190,9 +168,6 @@ class dram_t {
 
   fifo_pipeline<dram_req_t> *rwq;
   fifo_pipeline<dram_req_t> *mrqq;
-
-  fifo_pipeline<dram_req_t> *ready_pfq;
-  fifo_pipeline<dram_req_t> *unready_pfq;
   // buffer to hold packets when DRAM processing is over
   // should be filled with dram clock and popped with l2or icnt clock
   fifo_pipeline<mem_fetch> *returnq;
