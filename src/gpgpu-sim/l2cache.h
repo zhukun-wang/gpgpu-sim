@@ -109,6 +109,17 @@ class memory_partition_unit {
 
   class gpgpu_sim *get_mgpu() const { return m_gpu; }
 
+  fifo_pipeline<mem_fetch>* m_prefetch_global_queue = nullptr;
+  unsigned m_max_outstanding_prefetch = 64;
+  void generate_prefetch_after_issue(mem_fetch* trigger);
+  mem_fetch* new_prefetch_req(new_addr_type addr, mem_fetch* original);
+
+  struct sram_delay_t {
+    unsigned long long ready_cycle;
+    mem_fetch* req;
+  };
+  std::list<sram_delay_t> m_sram_latency_queue;
+
  private:
   unsigned m_id;
   const memory_config *m_config;

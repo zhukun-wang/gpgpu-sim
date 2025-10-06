@@ -95,6 +95,8 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
         new memory_sub_partition(sub_partition_id, m_config, stats, gpu);
   }
 
+  m_prefetch_global_queue = new fifo_pipeline<mem_fetch>("PREFETCH-to-DRAM", 0, 64);
+
   const unsigned line_sz = m_config->m_L2_config.get_line_sz();
   const size_t   sram_bytes = 512 * 1024;
   const unsigned assoc      = 8;
@@ -124,6 +126,9 @@ memory_partition_unit::~memory_partition_unit() {
     delete m_sub_partition[p];
   }
   delete[] m_sub_partition;
+
+  delete m_prefetch_global_queue;
+  
 }
 
 memory_partition_unit::arbitration_metadata::arbitration_metadata(
@@ -322,6 +327,12 @@ void memory_partition_unit::dram_cycle() {
 
   mem_fetch *mf_return = m_dram->return_queue_top();
   if (mf_return) {
+    if (mf_return->is_prefetch()) {
+	 
+	 m_dram->return_queue_pop();
+	 delete mf_return;
+
+    } else {
     unsigned dest_global_spid = mf_return->get_sub_partition_id();
     int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
     assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
@@ -342,6 +353,7 @@ void memory_partition_unit::dram_cycle() {
       }
       m_dram->return_queue_pop();
     }
+    }
   } else {
     m_dram->return_queue_pop();
   }
@@ -353,6 +365,9 @@ void memory_partition_unit::dram_cycle() {
   // if( !m_dram->full(mf->is_write()) ) {
   // L2->DRAM queue to DRAM latency queue
   // Arbitrate among multiple L2 subpartitions
+  
+  bool issued = false;
+
   int last_issued_partition = m_arbitration_metadata.last_borrower();
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
        p++) {
@@ -379,10 +394,30 @@ void memory_partition_unit::dram_cycle() {
       mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       m_arbitration_metadata.borrow_credit(spid);
+
+      generate_prefetch_after_issue(spid, mf);
+      issued = true;
+
       break;  // the DRAM should only accept one request per cycle
     }
   }
   //}
+
+  if (!issued && m_prefetch_global_queue && !m_prefetch_global_queue->empty()) {
+    mem_fetch* pf = m_prefetch_global_queue->top();
+
+    if (can_issue_to_dram(spid) && !m_dram->full(false)) {
+        m_prefetch_global_queue->pop();
+
+        dram_delay_t d;
+        d.req = pf;
+        d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+                        m_config->dram_latency;
+        m_dram_latency_queue.push_back(d);
+        pf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
+                       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    }
+  }
 
   // DRAM latency queue
   if (!m_dram_latency_queue.empty() &&
@@ -898,4 +933,46 @@ void memory_sub_partition::visualizer_print(gzFile visualizer_file) {
   m_stats->L2_write_hit += temp_sub_stats.write_hits;
 
   clear_L2cache_stats_pw();
+}
+
+mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch* original) {
+
+    mem_fetch* new_mf = new mem_fetch(original->get_access(),
+                                  &original->get_inst(),
+                                  original->get_streamID(),
+                                  original->get_ctrl_size(),
+                                  original->get_wid(),
+                                  original->get_sid(),
+                                  original->get_tpc(),
+                                  original->get_mem_config(),
+                                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                                  original->get_original_mf(),
+                                  original->get_original_wr_mf());
+
+
+    addrdec_t tlx;
+    m_config->m_address_mapping.addrdec_tlx(addr, &tlx);
+    new_mf->change_addr(tlx);
+
+    new_mf->mark_prefetch();
+
+    return new_mf;
+}
+
+void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
+
+    if (!m_prefetch_global_queue) return;
+    if (m_prefetch_global_queue->full()) return;
+    if ((unsigned)m_prefetch_global_queue->get_size() >= m_max_outstanding_prefetch) return;
+
+    new_addr_type base = trigger->get_addr();
+    new_addr_type pf_addr = base + 32;  
+
+
+    mem_fetch* pf = alloc_prefetch_like(pf_addr, trigger);
+    if (!pf) return;
+
+    pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
+                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    m_prefetch_global_queue->push(pf);
 }
