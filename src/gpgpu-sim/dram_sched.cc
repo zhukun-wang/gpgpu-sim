@@ -32,6 +32,8 @@
 #include "gpu-sim.h"
 #include "mem_latency_stat.h"
 
+#include "oracle.h"
+
 frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
                                    memory_stats_t *stats) {
   m_config = config;
@@ -70,6 +72,8 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
   
   m_stream_tbl.resize(m_config->nbk);
  for (auto &v : m_stream_tbl) v.resize(MAX_STREAMS_PER_BANK);
+
+ m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 100, 1);
 }
 
 void frfcfs_scheduler::add_req(dram_req_t *req) {
@@ -89,7 +93,7 @@ void frfcfs_scheduler::add_req(dram_req_t *req) {
     m_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
   }
 */
-      	
+/*      	
 if (req->data->is_write()) {	
   if (m_config->seperate_write_queue_enabled) {
     assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
@@ -192,8 +196,110 @@ if (req->data->is_write()) {
 	  }
   } 
   }
+*/
 
-}
+
+if (req->data->is_write()) {
+  if (m_config->seperate_write_queue_enabled) {
+    assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
+    m_num_write_pending++;
+    m_write_queue[req->bk].push_front(req);
+    std::list<dram_req_t *>::iterator ptr = m_write_queue[req->bk].begin();
+    m_write_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
+  } else {
+    assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
+    m_num_pending++;
+    m_queue[req->bk].push_front(req);
+    std::list<dram_req_t *>::iterator ptr = m_queue[req->bk].begin();
+    m_bins[req->bk][req->row].push_front(ptr);        // newest reqs to the front
+  }
+  return;
+
+} else {
+
+  auto [matched, all_ready] = m_dram->pf_table.match_and_consume(req->addr);
+  if (matched) {
+    FILE *f = fopen("count.txt", "a");
+    fprintf(f, "[Prefetch Hit] Dram: %u Bank: %u Row: %u Col: %u\n",
+            m_dram->id, req->bk, req->row, req->col);
+    fclose(f);
+
+    if (all_ready) {
+      m_dram->ready_pfq->push(req);
+      return;
+    } else {
+      m_dram->unready_pfq->push(req);
+      return;
+    }
+  }
+
+  assert(m_num_pending < m_config->gpgpu_frfcfs_dram_sched_queue_size);
+  m_num_pending++;
+  m_queue[req->bk].push_front(req);
+  auto ptr = m_queue[req->bk].begin();
+  m_bins[req->bk][req->row].push_front(ptr);
+  }
+
+  if (m_num_pending <= m_config->gpgpu_frfcfs_dram_sched_queue_size - 2) {
+  if (m_oracle.enabled()) {
+    unsigned want_chip = req->data->get_tlx_addr().chip;
+    unsigned want_bk   = req->bk;
+    unsigned want_row  = req->row;
+
+    auto decode = [this](new_addr_type a) -> OracleDecodedAddr {
+      addrdec_t tlx;
+      this->m_config->m_address_mapping.addrdec_tlx(a, &tlx);
+      return OracleDecodedAddr{ tlx.chip, tlx.bk, tlx.row };
+    };
+
+    auto cand_list = m_oracle.candidates(static_cast<uint64_t>(req->addr),
+                                         want_chip, want_bk, want_row,
+                                         decode);
+
+    std::unordered_set<new_addr_type> injected;
+    for (auto cand_addr : cand_list) {
+      if (m_num_pending >= m_config->gpgpu_frfcfs_dram_sched_queue_size) break;
+      if (cand_addr == req->addr) continue;
+      if (!injected.insert(cand_addr).second) continue;
+
+      m_dram->pf_table.insert_inflight(cand_addr);
+
+      mem_access_type atype = req->data->get_access_type();
+      unsigned size = req->data->get_data_size();
+      if (size == 0) size = m_config->dram_atom_size;
+
+      mem_access_t acc(atype, cand_addr, size, false,
+                       m_dram->m_gpu->gpgpu_ctx);
+
+      uint64_t now = m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle;
+
+      mem_fetch* pf_mf = new mem_fetch(acc,
+                          &req->data->get_inst(),
+                          req->data->get_streamID(),
+                          req->data->get_ctrl_size(),
+                          req->data->get_wid(),
+                          req->data->get_sid(),
+                          req->data->get_tpc(),
+                          req->data->get_mem_config(),
+                          now,
+                          req->data->get_original_mf(),
+                          req->data->get_original_wr_mf());
+
+      dram_req_t* pf_req = new dram_req_t(pf_mf, m_config->nbk,
+                                          m_config->dram_bnk_indexing_policy,
+                                          m_dram->m_gpu);
+      pf_req->is_prefetch = true;
+
+      m_num_pending++;
+      m_queue[pf_req->bk].push_front(pf_req);
+      auto iptr = m_queue[pf_req->bk].begin();
+      m_bins[pf_req->bk][pf_req->row].push_front(iptr);
+
+    }
+  }
+  }
+
+};
 
 void frfcfs_scheduler::data_collection(unsigned int bank) {
   if (m_dram->m_gpu->gpu_sim_cycle > row_service_timestamp[bank]) {

@@ -267,10 +267,10 @@ void dram_t::push(class mem_fetch *data) {
         const unsigned long long cyc = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
         if (m_gpu) m_gpu->chunk_monitor().observe_read((uint64_t)mrq->data->get_addr(), cyc);
 
-	FILE *f = fopen("count.txt", "a");
-	fprintf(f, "Time: %u, Dram: %u Bank: %u Row: %u Col: %u Address: 0x%llx\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, id, mrq->bk, mrq->row, mrq->col, mrq->data->get_addr());
+	//FILE *f = fopen("count.txt", "a");
+	//fprintf(f, "Time: %u, Dram: %u Bank: %u Row: %u Col: %u Address: 0x%llx\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, id, mrq->bk, mrq->row, mrq->col, mrq->data->get_addr());
 	//fprintf(f, "0x%llx\n", mrq->data->get_addr());
-	fclose(f);
+	//fclose(f);
     }
 
   mrqq->push(mrq);

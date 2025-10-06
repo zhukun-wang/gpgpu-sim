@@ -38,6 +38,8 @@
 #include "gpu-sim.h"
 #include "shader.h"
 
+#include "oracle.h"
+
 enum memory_mode { READ_MODE = 0, WRITE_MODE };
 
 class frfcfs_scheduler {
@@ -103,6 +105,8 @@ class frfcfs_scheduler {
   static constexpr unsigned MAX_COL_GAP          = 1;
   static constexpr uint64_t STREAM_TIMEOUT       = 200;
   static constexpr unsigned PREFETCH_CONF_TH     = 8;
+
+  OraclePrefetcher m_oracle;
 };
 
 #endif
