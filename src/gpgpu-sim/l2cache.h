@@ -120,16 +120,16 @@ class memory_partition_unit {
 
   inline void pf_track_request(new_addr_type addr) {
     m_prefetch_table[line_addr(addr)] = PF_PENDING;
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "[Prefetch Create]0x%llx\n", addr);
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "[Prefetch Create]0x%llx\n", addr);
+    //fclose(f);
   }
 
   inline void pf_mark_arrived(new_addr_type addr) {
     m_prefetch_table[line_addr(addr)] = PF_ARRIVED;
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "[Prefetch Arrive]0x%llx\n", addr);
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "[Prefetch Arrive]0x%llx\n", addr);
+    //fclose(f);
 
   }
 
@@ -146,7 +146,7 @@ class memory_partition_unit {
   struct sram_delay_t { unsigned long long ready_cycle; mem_fetch* req; };
   std::list<sram_delay_t> m_sram_ready;
 
-  std::unordered_map<new_addr_type, std::vector<mem_fetch*>> m_sram_unready;
+  std::unordered_map<new_addr_type, mem_fetch*> m_sram_unready;
 
 
  private:

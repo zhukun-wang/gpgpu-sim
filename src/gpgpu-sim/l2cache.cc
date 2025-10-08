@@ -315,6 +315,12 @@ void memory_partition_unit::simple_dram_model_cycle() {
 }
 
 void memory_partition_unit::dram_cycle() {
+    FILE *f = fopen("count.txt", "a");
+    fprintf(f, "Ready Queue: %llu\n", m_sram_ready.size());
+    fprintf(f, "Unready Queue: %llu\n", m_sram_unready.size());
+    fclose(f);
+
+      
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
   m_stats->report_throughput(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -329,31 +335,30 @@ void memory_partition_unit::dram_cycle() {
 	 auto it = m_sram_unready.find(la);
 	 if (it != m_sram_unready.end()) {
 
-	   for (mem_fetch* w : it->second) {
-	     unsigned dest_global_spid = w->get_sub_partition_id();
-    	     int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
-    	     assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
-    	     if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
+	   mem_fetch* w = it->second;
+	   unsigned dest_global_spid = w->get_sub_partition_id();
+    	   int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
+           assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
+    	   if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
 
-        	  m_stats->DRAM_to_L2_bytes += w->get_data_size();
+        	m_stats->DRAM_to_L2_bytes += w->get_data_size();
 
-        	  m_sub_partition[dest_spid]->dram_L2_queue_push(w);
-        	  mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
+        	m_sub_partition[dest_spid]->dram_L2_queue_push(w);
+        	w->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        	  MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n",
-              	  w, dest_spid);
+        	MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n",
+              	w, dest_spid);
 
-		  m_sram_unready.erase(it);
-		  m_dram->return_queue_pop();
-		  delete mf_return;
-    	     }
+		m_sram_unready.erase(it);
+		m_dram->return_queue_pop();
+		delete mf_return;
 	   }
 
 	   if (!m_sram_ready.empty() && ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >= m_sram_ready.front().ready_cycle))  {
 	     unsigned pf_dest_global_spid = m_sram_ready.front().req->get_sub_partition_id();
 	     int pf_dest_spid = global_sub_partition_id_to_local_id(pf_dest_global_spid);
 	     assert(m_sub_partition[pf_dest_spid]->get_id() == pf_dest_global_spid);
-	     if (pf_dest_spid != pf_dest_spid) {
+	     if (pf_dest_spid != dest_spid) {
 	        mem_fetch *mf = m_sram_ready.front().req;
 
 		if (!m_sub_partition[pf_dest_spid]->dram_L2_queue_full()) {
@@ -396,7 +401,7 @@ void memory_partition_unit::dram_cycle() {
 	    unsigned pf_dest_global_spid = m_sram_ready.front().req->get_sub_partition_id();
 	    int pf_dest_spid = global_sub_partition_id_to_local_id(pf_dest_global_spid);
 	    assert(m_sub_partition[pf_dest_spid]->get_id() == pf_dest_global_spid);
-	    if (pf_dest_spid != pf_dest_spid) {
+	    if (pf_dest_spid != dest_spid) {
 		    mem_fetch *mf = m_sram_ready.front().req;
 
 		    if (!m_sub_partition[pf_dest_spid]->dram_L2_queue_full()) {
@@ -468,7 +473,7 @@ void memory_partition_unit::dram_cycle() {
 	    //break;
 
 	  } else {
-	    m_sram_unready[la].push_back(mf);
+	    m_sram_unready.emplace(la, mf);
 	    //break;
 
 	  }
@@ -1056,9 +1061,9 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
     new_addr_type base = trigger->get_addr();
     new_addr_type pf_addr = base + 32; 
 
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "[Original Request]0x%llx\n", base);
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "[Original Request]0x%llx\n", base);
+    //fclose(f);
 
     mem_fetch* pf = new_prefetch_req(pf_addr, trigger);
     if (!pf) return;
