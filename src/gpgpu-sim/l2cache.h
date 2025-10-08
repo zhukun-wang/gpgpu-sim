@@ -38,6 +38,7 @@
 
 #include <list>
 #include <queue>
+#include <unordered_map>
 
 class mem_fetch;
 
@@ -110,15 +111,43 @@ class memory_partition_unit {
   class gpgpu_sim *get_mgpu() const { return m_gpu; }
 
   fifo_pipeline<mem_fetch>* m_prefetch_global_queue = nullptr;
-  unsigned m_max_outstanding_prefetch = 64;
   void generate_prefetch_after_issue(mem_fetch* trigger);
   mem_fetch* new_prefetch_req(new_addr_type addr, mem_fetch* original);
 
-  struct sram_delay_t {
-    unsigned long long ready_cycle;
-    mem_fetch* req;
-  };
-  std::list<sram_delay_t> m_sram_latency_queue;
+  enum prefetch_state_t { PF_PENDING = 0, PF_ARRIVED = 1 };
+
+  std::unordered_map<new_addr_type, prefetch_state_t> m_prefetch_table;
+
+  inline void pf_track_request(new_addr_type addr) {
+    m_prefetch_table[line_addr(addr)] = PF_PENDING;
+    FILE *f = fopen("count.txt", "a");
+    fprintf(f, "[Prefetch Create]0x%llx\n", addr);
+    fclose(f);
+  }
+
+  inline void pf_mark_arrived(new_addr_type addr) {
+    m_prefetch_table[line_addr(addr)] = PF_ARRIVED;
+    FILE *f = fopen("count.txt", "a");
+    fprintf(f, "[Prefetch Arrive]0x%llx\n", addr);
+    fclose(f);
+
+  }
+
+  inline bool pf_exists(new_addr_type addr) const {
+    auto it = m_prefetch_table.find(line_addr(addr));
+    return it != m_prefetch_table.end();
+  }
+
+  inline bool pf_is_arrived(new_addr_type addr) const {
+    auto it = m_prefetch_table.find(line_addr(addr));
+    return (it != m_prefetch_table.end()) && (it->second == PF_ARRIVED);
+  }
+
+  struct sram_delay_t { unsigned long long ready_cycle; mem_fetch* req; };
+  std::list<sram_delay_t> m_sram_ready;
+
+  std::unordered_map<new_addr_type, std::vector<mem_fetch*>> m_sram_unready;
+
 
  private:
   unsigned m_id;
