@@ -119,27 +119,27 @@ class memory_partition_unit {
   std::unordered_map<new_addr_type, prefetch_state_t> m_prefetch_table;
 
   inline void pf_track_request(new_addr_type addr) {
-    m_prefetch_table[line_addr(addr)] = PF_PENDING;
+    m_prefetch_table[addr] = PF_PENDING;
     //FILE *f = fopen("count.txt", "a");
     //fprintf(f, "[Prefetch Create]0x%llx\n", addr);
     //fclose(f);
   }
 
   inline void pf_mark_arrived(new_addr_type addr) {
-    m_prefetch_table[line_addr(addr)] = PF_ARRIVED;
-    //FILE *f = fopen("count.txt", "a");
+    m_prefetch_table[addr] = PF_ARRIVED;
+    //FILE *f = fopen("count1.txt", "a");
     //fprintf(f, "[Prefetch Arrive]0x%llx\n", addr);
     //fclose(f);
 
   }
 
   inline bool pf_exists(new_addr_type addr) const {
-    auto it = m_prefetch_table.find(line_addr(addr));
+    auto it = m_prefetch_table.find(addr);
     return it != m_prefetch_table.end();
   }
 
   inline bool pf_is_arrived(new_addr_type addr) const {
-    auto it = m_prefetch_table.find(line_addr(addr));
+    auto it = m_prefetch_table.find(addr);
     return (it != m_prefetch_table.end()) && (it->second == PF_ARRIVED);
   }
 
@@ -147,7 +147,6 @@ class memory_partition_unit {
   std::list<sram_delay_t> m_sram_ready;
 
   std::unordered_map<new_addr_type, mem_fetch*> m_sram_unready;
-
 
  private:
   unsigned m_id;
@@ -196,12 +195,6 @@ class memory_partition_unit {
   std::list<dram_delay_t> m_dram_latency_queue;
 
   class gpgpu_sim *m_gpu;
-
-  mc_sram_cache *m_mc_sram;
-
-  inline new_addr_type line_addr(new_addr_type a) const {
-    return a & ~(new_addr_type(m_config->m_L2_config.get_line_sz()) - 1ULL);
-  }
 };
 
 class memory_sub_partition {

@@ -315,10 +315,10 @@ void memory_partition_unit::simple_dram_model_cycle() {
 }
 
 void memory_partition_unit::dram_cycle() {
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "Ready Queue: %llu\n", m_sram_ready.size());
-    fprintf(f, "Unready Queue: %llu\n", m_sram_unready.size());
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "Ready Queue: %llu\n", m_sram_ready.size());
+    //fprintf(f, "Unready Queue: %llu\n", m_sram_unready.size());
+    //fclose(f);
 
       
   // pop completed memory request from dram and push it to dram-to-L2 queue
@@ -332,10 +332,20 @@ void memory_partition_unit::dram_cycle() {
 	 const new_addr_type la = mf_return->get_addr();   
 	 pf_mark_arrived(la);
 
+	 //FILE *f = fopen("count1.txt", "a");
+	 //fprintf(f, "[Prefetch Arrive]0x%llx\n", la);
+	 //fclose(f);
+
 	 auto it = m_sram_unready.find(la);
 	 if (it != m_sram_unready.end()) {
 
+	 //FILE *f = fopen("count1.txt", "a");
+         //fprintf(f, "[Unready Match]0x%llx\n", la);
+         //fclose(f);
+
+
 	   mem_fetch* w = it->second;
+
 	   unsigned dest_global_spid = w->get_sub_partition_id();
     	   int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
            assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
@@ -348,6 +358,15 @@ void memory_partition_unit::dram_cycle() {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         	MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n",
               	w, dest_spid);
+
+		m_sram_unready.erase(it);
+		m_dram->return_queue_pop();
+		delete mf_return;
+	   } else {
+		sram_delay_t s;
+		s.req = w;
+		s.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+		m_sram_ready.push_back(s);
 
 		m_sram_unready.erase(it);
 		m_dram->return_queue_pop();
@@ -474,6 +493,10 @@ void memory_partition_unit::dram_cycle() {
 
 	  } else {
 	    m_sram_unready.emplace(la, mf);
+	   //FILE *f = fopen("count.txt", "a");
+           //fprintf(f, "[Unready Create]0x%llx\n", la);
+           //fclose(f);
+
 	    //break;
 
 	  }
