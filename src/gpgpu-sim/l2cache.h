@@ -35,6 +35,7 @@
 #include "../abstract_hardware_model.h"
 #include "dram.h"
 #include "mc_cache.h"
+#include "oracle.h"
 
 #include <list>
 #include <queue>
@@ -147,6 +148,12 @@ class memory_partition_unit {
   std::list<sram_delay_t> m_sram_ready;
 
   std::unordered_map<new_addr_type, mem_fetch*> m_sram_unready;
+
+  std::vector<unsigned> m_bank_inflight;
+
+  int bank_id_from_mf(class mem_fetch* mf);
+
+  OraclePrefetcher m_oracle;
 
  private:
   unsigned m_id;

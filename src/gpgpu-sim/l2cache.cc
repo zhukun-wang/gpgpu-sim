@@ -43,12 +43,14 @@
 #include "gpu-cache.h"
 #include "gpu-sim.h"
 #include "histogram.h"
+#include "hashing.h"
 #include "l2cache.h"
 #include "l2cache_trace.h"
 #include "mem_fetch.h"
 #include "mem_latency_stat.h"
 #include "shader.h"
 #include "mc_cache.h"
+#include "oracle.h"
 
 mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
                                          mem_access_type type, unsigned size,
@@ -96,6 +98,10 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
   }
 
   m_prefetch_global_queue = new fifo_pipeline<mem_fetch>("PREFETCH-to-DRAM", 0, 64);
+
+  m_bank_inflight.assign(m_config->nbk, 0);
+
+  m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 200);
 
 }
 
@@ -316,8 +322,10 @@ void memory_partition_unit::simple_dram_model_cycle() {
 
 void memory_partition_unit::dram_cycle() {
     //FILE *f = fopen("count.txt", "a");
-    //fprintf(f, "Ready Queue: %llu\n", m_sram_ready.size());
-    //fprintf(f, "Unready Queue: %llu\n", m_sram_unready.size());
+    //for (unsigned i = 0; i < m_config->nbk; i++) {
+    //    fprintf(f, "%u ", m_bank_inflight[i]);
+    //} 
+    //fprintf(f, "\n");
     //fclose(f);
 
       
@@ -361,6 +369,10 @@ void memory_partition_unit::dram_cycle() {
 
 		m_sram_unready.erase(it);
 		m_dram->return_queue_pop();
+
+		int b = bank_id_from_mf(mf_return);
+		if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+		m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
 		delete mf_return;
 	   } else {
 		sram_delay_t s;
@@ -370,6 +382,10 @@ void memory_partition_unit::dram_cycle() {
 
 		m_sram_unready.erase(it);
 		m_dram->return_queue_pop();
+
+		int b = bank_id_from_mf(mf_return);
+		if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+		m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
 		delete mf_return;
 	   }
 
@@ -392,6 +408,9 @@ void memory_partition_unit::dram_cycle() {
 	   }
 	 } else {
 	   m_dram->return_queue_pop();
+	   int b = bank_id_from_mf(mf_return);
+	   if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+	   m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
 	   delete mf_return;
 	 }
     } else {
@@ -401,6 +420,8 @@ void memory_partition_unit::dram_cycle() {
     if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
       if (mf_return->get_access_type() == L1_WRBK_ACC) {
         m_sub_partition[dest_spid]->set_done(mf_return);
+	int b = bank_id_from_mf(mf_return);
+	if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
         delete mf_return;
       } else {
 	m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
@@ -412,6 +433,8 @@ void memory_partition_unit::dram_cycle() {
         MEMPART_DPRINTF(
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
+	int b = bank_id_from_mf(mf_return);
+	if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
       }
       m_dram->return_queue_pop();
     }
@@ -472,7 +495,7 @@ void memory_partition_unit::dram_cycle() {
       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
       if (m_dram->full(mf->is_write())) break;
       
-      if (!mf->is_write()){
+      if (mf->is_write()){
       	m_stats->L2_to_DRAM_bytes += mf->get_data_size();
       }
 
@@ -511,6 +534,10 @@ void memory_partition_unit::dram_cycle() {
         m_arbitration_metadata.borrow_credit(spid);
 
         generate_prefetch_after_issue(mf);
+	
+	int b = bank_id_from_mf(mf);
+  	++m_bank_inflight[b];
+
         issued = true;
 
         break;  // the DRAM should only accept one request per cycle
@@ -532,6 +559,9 @@ void memory_partition_unit::dram_cycle() {
         m_dram_latency_queue.push_back(d);
         pf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+
+	int b = bank_id_from_mf(pf);
+	++m_bank_inflight[b];
     }
   }
 
@@ -1080,13 +1110,54 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
 
     if (!m_prefetch_global_queue) return;
     if (m_prefetch_global_queue->full()) return;
+    if (!m_oracle.enabled()) return;
 
-    new_addr_type base = trigger->get_addr();
-    new_addr_type pf_addr = base + 32; 
+    //new_addr_type base = trigger->get_addr();
+    //new_addr_type pf_addr = base + 32; 
 
     //FILE *f = fopen("count.txt", "a");
     //fprintf(f, "[Original Request]0x%llx\n", base);
     //fclose(f);
+    
+    auto decoder = [this](uint64_t a) -> OracleDecodedAddr {
+        addrdec_t tlx;
+        m_config->m_address_mapping.addrdec_tlx(a, &tlx);
+	unsigned banks = m_config->nbk;
+	int bk;
+
+	switch (m_config->dram_bnk_indexing_policy) {
+          case LINEAR_BK_INDEX: {
+            bk = tlx.bk;
+            break;
+          }
+          case BITWISE_XORING_BK_INDEX: {
+            bk = bitwise_hash_function(tlx.row, tlx.bk, banks);
+            assert(bk < banks);
+            break;
+          }
+          case IPOLY_BK_INDEX: {
+            bk = ipoly_hash_function(tlx.row, tlx.bk, banks);
+            assert(bk < banks);
+	  }
+          case CUSTOM_BK_INDEX:
+            break;
+          default:
+            assert("\nUndefined bank index function.\n" && 0);
+            break;
+        }
+
+        return OracleDecodedAddr{tlx.chip, bk};
+    };
+
+    const uint64_t curr = trigger->get_addr();
+    uint64_t pf_addr = m_oracle.pick_next_addr_blp(curr, m_id, m_bank_inflight, decoder);
+
+    if (!pf_addr) return;
+
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "[Prefetch Match]0x%llx\n", pf_addr);
+    //fclose(f);
+
 
     mem_fetch* pf = new_prefetch_req(pf_addr, trigger);
     if (!pf) return;
@@ -1098,3 +1169,37 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
 
     pf_track_request(pf_addr);
 }
+
+int memory_partition_unit::bank_id_from_mf(class mem_fetch* mf) {
+
+	unsigned banks = m_config->nbk;
+	const addrdec_t &tlx = mf->get_tlx_addr();
+	int bk;
+
+	switch (m_config->dram_bnk_indexing_policy) {
+    	  case LINEAR_BK_INDEX: {
+      	    bk = tlx.bk;
+      	    break;
+    	  }
+    	  case BITWISE_XORING_BK_INDEX: {
+      	    bk = bitwise_hash_function(tlx.row, tlx.bk, banks);
+      	    assert(bk < banks);
+      	    break;
+    	  }
+    	  case IPOLY_BK_INDEX: {
+      	    bk = ipoly_hash_function(tlx.row, tlx.bk, banks);
+      	    assert(bk < banks);
+      	    break;
+    	  }
+    	  case CUSTOM_BK_INDEX:
+      	    break;
+    	  default:
+      	    assert("\nUndefined bank index function.\n" && 0);
+      	    break;
+  	}
+
+	return bk;
+
+}
+
+	
