@@ -77,7 +77,7 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
 }
 
 void frfcfs_scheduler::add_req(dram_req_t *req) {
-/*
+
   if (m_config->seperate_write_queue_enabled && req->data->is_write()) {
     assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
     m_num_write_pending++;
@@ -92,7 +92,7 @@ void frfcfs_scheduler::add_req(dram_req_t *req) {
     std::list<dram_req_t *>::iterator ptr = m_queue[req->bk].begin();
     m_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
   }
-*/
+
 /*      	
 if (req->data->is_write()) {	
   if (m_config->seperate_write_queue_enabled) {
@@ -198,7 +198,7 @@ if (req->data->is_write()) {
   }
 */
 
-
+/*
 if (req->data->is_write()) {
   if (m_config->seperate_write_queue_enabled) {
     assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
@@ -219,10 +219,10 @@ if (req->data->is_write()) {
 
   auto [matched, all_ready] = m_dram->pf_table.match_and_consume(req->addr);
   if (matched) {
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "[Prefetch Hit] Dram: %u Bank: %u Row: %u Col: %u\n",
-            m_dram->id, req->bk, req->row, req->col);
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "[Prefetch Hit] Dram: %u Bank: %u Row: %u Col: %u\n",
+    //        m_dram->id, req->bk, req->row, req->col);
+    //fclose(f);
 
     if (all_ready) {
       m_dram->ready_pfq->push(req);
@@ -298,7 +298,7 @@ if (req->data->is_write()) {
     }
   }
   }
-
+*/
 };
 
 void frfcfs_scheduler::data_collection(unsigned int bank) {
