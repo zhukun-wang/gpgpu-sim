@@ -101,7 +101,13 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
   m_bank_inflight.assign(m_config->nbk, 0);
 
-  m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 200);
+  //m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 200);
+
+  m_rlb_head = 0;
+  for (unsigned i = 0; i < RLB_SIZE; ++i) {
+    m_recent_lines[i].valid = false;
+    m_recent_lines[i].line_addr = 0;
+  }
 
 }
 
@@ -512,6 +518,7 @@ void memory_partition_unit::dram_cycle() {
 	    s.req = mf;
 	    s.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + 2;
 	    m_sram_ready.push_back(s);
+	    rlb_insert(la);
 	    //break;
 
 	  } else {
@@ -536,6 +543,7 @@ void memory_partition_unit::dram_cycle() {
         generate_prefetch_after_issue(mf);
 	
 	int b = bank_id_from_mf(mf);
+	rlb_insert(mf->get_addr());
   	++m_bank_inflight[b];
 
         issued = true;
@@ -561,6 +569,7 @@ void memory_partition_unit::dram_cycle() {
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
 	int b = bank_id_from_mf(pf);
+	rlb_insert(pf->get_addr());
 	++m_bank_inflight[b];
     }
   }
@@ -1110,7 +1119,7 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
 
     if (!m_prefetch_global_queue) return;
     if (m_prefetch_global_queue->full()) return;
-    if (!m_oracle.enabled()) return;
+    //if (!m_oracle.enabled()) return;
 
     //new_addr_type base = trigger->get_addr();
     //new_addr_type pf_addr = base + 32; 
@@ -1119,6 +1128,7 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
     //fprintf(f, "[Original Request]0x%llx\n", base);
     //fclose(f);
     
+    /*
     auto decoder = [this](uint64_t a) -> OracleDecodedAddr {
         addrdec_t tlx;
         m_config->m_address_mapping.addrdec_tlx(a, &tlx);
@@ -1148,15 +1158,17 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
 
         return OracleDecodedAddr{tlx.chip, bk};
     };
+    */
 
     const uint64_t curr = trigger->get_addr();
-    uint64_t pf_addr = m_oracle.pick_next_addr_blp(curr, m_id, m_bank_inflight, decoder);
+    //uint64_t pf_addr = m_oracle.pick_next_addr_blp(curr, m_id, m_bank_inflight, decoder);
+    uint64_t pf_addr = pick_prefetch_addr_from_pattern(curr, m_bank_inflight);
 
     if (!pf_addr) return;
 
-    //FILE *f = fopen("count.txt", "a");
-    //fprintf(f, "[Prefetch Match]0x%llx\n", pf_addr);
-    //fclose(f);
+    FILE *f = fopen("count.txt", "a");
+    fprintf(f, "[Prefetch Match]0x%llx\n", pf_addr);
+    fclose(f);
 
 
     mem_fetch* pf = new_prefetch_req(pf_addr, trigger);
@@ -1202,4 +1214,87 @@ int memory_partition_unit::bank_id_from_mf(class mem_fetch* mf) {
 
 }
 
-	
+bool memory_partition_unit::rlb_contains(new_addr_type line){
+    for (unsigned i = 0; i < RLB_SIZE; ++i) {
+        if (m_recent_lines[i].valid && m_recent_lines[i].line_addr == line) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void memory_partition_unit::rlb_insert(new_addr_type line) {
+    for (unsigned i = 0; i < RLB_SIZE; ++i) {
+        if (m_recent_lines[i].valid && m_recent_lines[i].line_addr == line) {
+            return;
+        }
+    }
+
+    m_recent_lines[m_rlb_head].line_addr = line;
+    m_recent_lines[m_rlb_head].valid = true;
+    m_rlb_head = (m_rlb_head + 1) % RLB_SIZE;
+}
+
+new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
+    new_addr_type curr_addr,
+    const std::vector<unsigned> &bank_inflight)
+{
+    const new_addr_type BIG_STRIDE    = 0x2000;
+    const new_addr_type SMALL_STRIDE  = 0x20;
+    const unsigned M_MAX = 16;
+    const unsigned N_MAX = 8;
+
+    new_addr_type base_addr = curr_addr & ~0xFF;
+
+    if (bank_inflight.empty()) return 0;
+
+    for (unsigned m = 0; m < M_MAX; ++m) {
+        for (unsigned n = 0; n < N_MAX; ++n) {
+            new_addr_type cand = base_addr + m * BIG_STRIDE + n * SMALL_STRIDE;
+
+	    if (cand == curr_addr)
+		continue;
+            if (rlb_contains(cand))
+                continue;
+            if (pf_exists(cand))
+                continue;
+
+            addrdec_t tlx;
+            m_config->m_address_mapping.addrdec_tlx(cand, &tlx);
+            if (tlx.chip != m_id)
+                continue;
+
+            int bk;
+            switch (m_config->dram_bnk_indexing_policy) {
+                case LINEAR_BK_INDEX:
+                    bk = tlx.bk;
+                    break;
+                case BITWISE_XORING_BK_INDEX:
+                    bk = bitwise_hash_function(tlx.row, tlx.bk, m_config->nbk);
+                    assert(bk < (int)m_config->nbk);
+                    break;
+                case IPOLY_BK_INDEX:
+                    bk = ipoly_hash_function(tlx.row, tlx.bk, m_config->nbk);
+                    assert(bk < (int)m_config->nbk);
+                    break;
+                case CUSTOM_BK_INDEX:
+                    bk = tlx.bk;
+                    break;
+                default:
+                    assert(0 && "Undefined bank index function.");
+                    bk = 0;
+                    break;
+            }
+
+            if ((unsigned)bk >= bank_inflight.size())
+                continue;
+
+            if (bank_inflight[bk] < 4) {
+                return cand;
+            }
+        }
+    }
+
+    return 0;
+}
+

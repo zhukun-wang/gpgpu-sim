@@ -155,6 +155,22 @@ class memory_partition_unit {
 
   OraclePrefetcher m_oracle;
 
+  static const unsigned RLB_SIZE = 256;
+
+  struct rlb_entry_t {
+    new_addr_type line_addr; 
+    bool valid;
+  };
+
+  rlb_entry_t m_recent_lines[RLB_SIZE];
+  unsigned m_rlb_head;
+
+  void rlb_insert(new_addr_type line);
+
+  bool rlb_contains(new_addr_type line);
+
+  new_addr_type pick_prefetch_addr_from_pattern(new_addr_type curr_addr, const std::vector<unsigned> &bank_inflight);
+
  private:
   unsigned m_id;
   const memory_config *m_config;
