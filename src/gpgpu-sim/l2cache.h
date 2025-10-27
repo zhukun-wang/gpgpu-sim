@@ -171,6 +171,23 @@ class memory_partition_unit {
 
   new_addr_type pick_prefetch_addr_from_pattern(new_addr_type curr_addr, const std::vector<unsigned> &bank_inflight);
 
+  static const unsigned ACTIVE_BASE_TABLE_SIZE = 16;
+
+  struct active_base_entry_t {
+    new_addr_type base;            
+    new_addr_type last_addr;        
+    bool valid;
+    unsigned long long timestamp;    
+  };
+
+  active_base_entry_t m_active_base_table[ACTIVE_BASE_TABLE_SIZE];
+
+  new_addr_type align_active_base(new_addr_type addr);
+
+  int find_active_base_slot(new_addr_type base);
+
+  void update_active_base_table(new_addr_type addr);
+
  private:
   unsigned m_id;
   const memory_config *m_config;

@@ -101,7 +101,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
   m_bank_inflight.assign(m_config->nbk, 0);
 
-  //m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 200);
+  //m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace_llama.txt", 200);
 
   m_rlb_head = 0;
   for (unsigned i = 0; i < RLB_SIZE; ++i) {
@@ -109,6 +109,13 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
     m_recent_lines[i].line_addr = 0;
   }
 
+
+  for (unsigned i = 0; i < ACTIVE_BASE_TABLE_SIZE; ++i) {
+    m_active_base_table[i].valid = false;
+    m_active_base_table[i].base = 0;
+    m_active_base_table[i].last_addr = 0;
+    m_active_base_table[i].timestamp = 0;
+  }
 }
 
 void memory_partition_unit::handle_memcpy_to_gpu(
@@ -511,6 +518,7 @@ void memory_partition_unit::dram_cycle() {
           spid);
 
       const new_addr_type la = mf->get_addr();
+      update_active_base_table(la);
 
       if (pf_exists(la)) {
          if (pf_is_arrived(la)) {
@@ -1167,7 +1175,7 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
     if (!pf_addr) return;
 
     FILE *f = fopen("count.txt", "a");
-    fprintf(f, "[Prefetch Match]0x%llx\n", pf_addr);
+    fprintf(f, "[Prefetch Match] 0x%llx -> 0x%llx\n", curr, pf_addr);
     fclose(f);
 
 
@@ -1239,58 +1247,114 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     new_addr_type curr_addr,
     const std::vector<unsigned> &bank_inflight)
 {
-    const new_addr_type BIG_STRIDE    = 0x2000;
-    const new_addr_type SMALL_STRIDE  = 0x20;
-    const unsigned M_MAX = 16;
-    const unsigned N_MAX = 8;
-
-    new_addr_type base_addr = curr_addr & ~0xFF;
-
     if (bank_inflight.empty()) return 0;
 
-    for (unsigned m = 0; m < M_MAX; ++m) {
-        for (unsigned n = 0; n < N_MAX; ++n) {
-            new_addr_type cand = base_addr + m * BIG_STRIDE + n * SMALL_STRIDE;
+    struct CandInfo {
+        new_addr_type addr;
+        int bank;
+    };
 
-	    if (cand == curr_addr)
-		continue;
-            if (rlb_contains(cand))
-                continue;
-            if (pf_exists(cand))
-                continue;
+    std::vector<CandInfo> cand_list;
+    cand_list.reserve(512);
 
-            addrdec_t tlx;
-            m_config->m_address_mapping.addrdec_tlx(cand, &tlx);
-            if (tlx.chip != m_id)
-                continue;
+    std::set<new_addr_type> seen;
 
-            int bk;
-            switch (m_config->dram_bnk_indexing_policy) {
-                case LINEAR_BK_INDEX:
-                    bk = tlx.bk;
-                    break;
-                case BITWISE_XORING_BK_INDEX:
-                    bk = bitwise_hash_function(tlx.row, tlx.bk, m_config->nbk);
-                    assert(bk < (int)m_config->nbk);
-                    break;
-                case IPOLY_BK_INDEX:
-                    bk = ipoly_hash_function(tlx.row, tlx.bk, m_config->nbk);
-                    assert(bk < (int)m_config->nbk);
-                    break;
-                case CUSTOM_BK_INDEX:
-                    bk = tlx.bk;
-                    break;
-                default:
-                    assert(0 && "Undefined bank index function.");
-                    bk = 0;
-                    break;
+    auto gen_candidates = [&](new_addr_type seed_addr,
+                              unsigned M_MAX,
+                              unsigned N_MAX) {
+        const new_addr_type BIG_STRIDE   = 0x2000;
+        const new_addr_type SMALL_STRIDE = 0x20;
+
+        new_addr_type base_addr = seed_addr & ~((new_addr_type)0xFF);
+
+        for (unsigned m = 0; m < M_MAX; ++m) {
+            for (unsigned n = 0; n < N_MAX; ++n) {
+
+                new_addr_type cand = base_addr + m * BIG_STRIDE + n * SMALL_STRIDE;
+
+                if (cand == seed_addr)
+                    continue;
+
+                if (rlb_contains(cand))
+                    continue;
+
+                if (pf_exists(cand))
+                    continue;
+
+                addrdec_t tlx;
+                m_config->m_address_mapping.addrdec_tlx(cand, &tlx);
+                if (tlx.chip != m_id)
+                    continue;
+
+                int bk;
+                switch (m_config->dram_bnk_indexing_policy) {
+                    case LINEAR_BK_INDEX:
+                        bk = tlx.bk;
+                        break;
+                    case BITWISE_XORING_BK_INDEX:
+                        bk = bitwise_hash_function(tlx.row, tlx.bk, m_config->nbk);
+                        assert(bk < (int)m_config->nbk);
+                        break;
+                    case IPOLY_BK_INDEX:
+                        bk = ipoly_hash_function(tlx.row, tlx.bk, m_config->nbk);
+                        assert(bk < (int)m_config->nbk);
+                        break;
+                    case CUSTOM_BK_INDEX:
+                        bk = tlx.bk;
+                        break;
+                    default:
+                        assert(0 && "Undefined bank index function.");
+                        bk = 0;
+                        break;
+                }
+
+                if ((unsigned)bk >= bank_inflight.size())
+                    continue;
+
+                if (seen.find(cand) != seen.end())
+                    continue;
+                seen.insert(cand);
+
+                CandInfo info;
+                info.addr = cand;
+                info.bank = bk;
+                cand_list.push_back(info);
             }
+        }
+    };
 
-            if ((unsigned)bk >= bank_inflight.size())
-                continue;
+    gen_candidates(curr_addr, 8, 8);
 
-            if (bank_inflight[bk] < 4) {
-                return cand;
+    for (unsigned i = 0; i < ACTIVE_BASE_TABLE_SIZE; ++i) {
+        if (!m_active_base_table[i].valid)
+            continue;
+
+        new_addr_type seed = m_active_base_table[i].last_addr;
+        gen_candidates(seed, 4, 8);
+    }
+
+    if (cand_list.empty())
+        return 0;
+
+    std::vector<unsigned> bank_order;
+    bank_order.reserve(bank_inflight.size());
+    for (unsigned b = 0; b < bank_inflight.size(); ++b) {
+        bank_order.push_back(b);
+    }
+
+    std::sort(bank_order.begin(), bank_order.end(),
+              [&](unsigned a, unsigned b) {
+                  return bank_inflight[a] < bank_inflight[b];
+              });
+
+    for (unsigned idx = 0; idx < bank_order.size(); ++idx) {
+        unsigned bk = bank_order[idx];
+        if (bank_inflight[bk] > 4)
+            break;
+
+        for (size_t c = 0; c < cand_list.size(); ++c) {
+            if (cand_list[c].bank == (int)bk) {
+                return cand_list[c].addr;
             }
         }
     }
@@ -1298,3 +1362,61 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     return 0;
 }
 
+new_addr_type memory_partition_unit::align_active_base(new_addr_type addr)
+{
+    return addr & ~((new_addr_type)0xFFFF);
+}
+
+int memory_partition_unit::find_active_base_slot(new_addr_type base)
+{
+    for (unsigned i = 0; i < ACTIVE_BASE_TABLE_SIZE; ++i) {
+        if (m_active_base_table[i].valid &&
+            m_active_base_table[i].base == base) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+void memory_partition_unit::update_active_base_table(new_addr_type addr)
+{
+    new_addr_type base = align_active_base(addr);
+    unsigned long long now = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+
+    int idx = find_active_base_slot(base);
+    if (idx >= 0) {
+        m_active_base_table[idx].last_addr  = addr;
+        m_active_base_table[idx].timestamp  = now;
+        return;
+    }
+
+    int free_idx = -1;
+    for (unsigned i = 0; i < ACTIVE_BASE_TABLE_SIZE; ++i) {
+        if (!m_active_base_table[i].valid) {
+            free_idx = i;
+            break;
+        }
+    }
+
+    if (free_idx >= 0) {
+        m_active_base_table[free_idx].valid      = true;
+        m_active_base_table[free_idx].base       = base;
+        m_active_base_table[free_idx].last_addr  = addr;
+        m_active_base_table[free_idx].timestamp  = now;
+        return;
+    }
+
+    unsigned lru_idx = 0;
+    unsigned long long lru_time = m_active_base_table[0].timestamp;
+    for (unsigned i = 1; i < ACTIVE_BASE_TABLE_SIZE; ++i) {
+        if (m_active_base_table[i].timestamp < lru_time) {
+            lru_time = m_active_base_table[i].timestamp;
+            lru_idx = i;
+        }
+    }
+
+    m_active_base_table[lru_idx].valid      = true;
+    m_active_base_table[lru_idx].base       = base;
+    m_active_base_table[lru_idx].last_addr  = addr;
+    m_active_base_table[lru_idx].timestamp  = now;
+}
