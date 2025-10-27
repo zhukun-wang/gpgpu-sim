@@ -171,7 +171,7 @@ class memory_partition_unit {
 
   new_addr_type pick_prefetch_addr_from_pattern(new_addr_type curr_addr, const std::vector<unsigned> &bank_inflight);
 
-  static const unsigned ACTIVE_BASE_TABLE_SIZE = 16;
+  static const unsigned ACTIVE_BASE_TABLE_SIZE = 32;
 
   struct active_base_entry_t {
     new_addr_type base;            
