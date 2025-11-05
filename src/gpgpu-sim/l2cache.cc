@@ -100,6 +100,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
   m_prefetch_global_queue = new fifo_pipeline<mem_fetch>("PREFETCH-to-DRAM", 0, 64);
 
   m_bank_inflight.assign(m_config->nbk, 0);
+  m_bank_row_pending.resize(m_config->nbk);
 
   //m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace_llama.txt", 200);
 
@@ -384,7 +385,15 @@ void memory_partition_unit::dram_cycle() {
 		m_dram->return_queue_pop();
 
 		int b = bank_id_from_mf(mf_return);
+		unsigned row = mf_return->get_tlx_addr().row;
+
 		if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+		auto it = m_bank_row_pending[b].find(row);
+		if (it != m_bank_row_pending[b].end()) {
+    			if (--it->second == 0)
+        			m_bank_row_pending[b].erase(it);
+		}
+
 		m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
 		delete mf_return;
 	   } else {
@@ -397,7 +406,14 @@ void memory_partition_unit::dram_cycle() {
 		m_dram->return_queue_pop();
 
 		int b = bank_id_from_mf(mf_return);
+		unsigned row = mf_return->get_tlx_addr().row;
+
 		if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+		auto it = m_bank_row_pending[b].find(row);
+		if (it != m_bank_row_pending[b].end()) {
+			if (--it->second == 0)
+				m_bank_row_pending[b].erase(it);
+		}
 		m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
 		delete mf_return;
 	   }
@@ -422,7 +438,15 @@ void memory_partition_unit::dram_cycle() {
 	 } else {
 	   m_dram->return_queue_pop();
 	   int b = bank_id_from_mf(mf_return);
+	   unsigned row = mf_return->get_tlx_addr().row;
+
 	   if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+	   auto it = m_bank_row_pending[b].find(row);
+	   if (it != m_bank_row_pending[b].end()) {
+		   if (--it->second == 0)
+			   m_bank_row_pending[b].erase(it);
+	   }
+
 	   m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
 	   delete mf_return;
 	 }
@@ -434,7 +458,14 @@ void memory_partition_unit::dram_cycle() {
       if (mf_return->get_access_type() == L1_WRBK_ACC) {
         m_sub_partition[dest_spid]->set_done(mf_return);
 	int b = bank_id_from_mf(mf_return);
+	unsigned row = mf_return->get_tlx_addr().row;
+
 	if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+	auto it = m_bank_row_pending[b].find(row);
+	if (it != m_bank_row_pending[b].end()) {
+		if (--it->second == 0)
+			m_bank_row_pending[b].erase(it);
+	}
         delete mf_return;
       } else {
 	m_stats->DRAM_to_L2_bytes += mf_return->get_data_size();
@@ -447,7 +478,14 @@ void memory_partition_unit::dram_cycle() {
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
 	int b = bank_id_from_mf(mf_return);
+	unsigned row = mf_return->get_tlx_addr().row;
+
 	if (m_bank_inflight[b] > 0) --m_bank_inflight[b];
+	auto it = m_bank_row_pending[b].find(row);
+	if (it != m_bank_row_pending[b].end()) {
+		if (--it->second == 0)
+			m_bank_row_pending[b].erase(it);
+	}
       }
       m_dram->return_queue_pop();
     }
@@ -551,8 +589,11 @@ void memory_partition_unit::dram_cycle() {
         generate_prefetch_after_issue(mf);
 	
 	int b = bank_id_from_mf(mf);
+	unsigned row = mf->get_tlx_addr().row;
+
 	rlb_insert(mf->get_addr());
   	++m_bank_inflight[b];
+	m_bank_row_pending[b][row]++;
 
         issued = true;
 
@@ -577,8 +618,11 @@ void memory_partition_unit::dram_cycle() {
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
 	int b = bank_id_from_mf(pf);
+	unsigned row = pf->get_tlx_addr().row;
+
 	rlb_insert(pf->get_addr());
 	++m_bank_inflight[b];
+	m_bank_row_pending[b][row]++;
     }
   }
 
@@ -1252,6 +1296,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     struct CandInfo {
         new_addr_type addr;
         int bank;
+	unsigned row;
     };
 
     std::vector<CandInfo> cand_list;
@@ -1318,6 +1363,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
                 CandInfo info;
                 info.addr = cand;
                 info.bank = bk;
+		info.row = tlx.row;
                 cand_list.push_back(info);
             }
         }
@@ -1336,6 +1382,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     if (cand_list.empty())
         return 0;
 
+/*
     std::vector<unsigned> bank_order;
     bank_order.reserve(bank_inflight.size());
     for (unsigned b = 0; b < bank_inflight.size(); ++b) {
@@ -1357,6 +1404,47 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
                 return cand_list[c].addr;
             }
         }
+    }
+*/
+
+    auto has_pending_row = [&](int bk, unsigned row) -> bool {
+        if ((unsigned)bk >= m_bank_row_pending.size()) return false;
+        const auto &mp = m_bank_row_pending[bk];
+        return mp.find(row) != mp.end();
+    };
+
+    for (const auto &c : cand_list) {
+        if ((unsigned)c.bank < bank_inflight.size() && bank_inflight[c.bank] == 0) {
+            return c.addr;
+        }
+    }
+
+    for (const auto &c : cand_list) {
+        if ((unsigned)c.bank < bank_inflight.size()
+            && bank_inflight[c.bank] < 4
+            && has_pending_row(c.bank, c.row)) {
+            return c.addr;
+        }
+    }
+
+    int    best_idx = -1;
+    unsigned best_load = UINT_MAX;
+    for (int i = 0; i < (int)cand_list.size(); ++i) {
+        const auto &c = cand_list[i];
+        if ((unsigned)c.bank >= bank_inflight.size()) continue;
+        unsigned load = bank_inflight[c.bank];
+        if (load < best_load) {
+            best_load = load;
+            best_idx = i;
+            if (best_load == 0) break; 
+        }
+    }
+
+    if (best_idx >= 0) {
+        if (best_load > 6) {
+            return 0;   
+        }
+        return cand_list[best_idx].addr;
     }
 
     return 0;

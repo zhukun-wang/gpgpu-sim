@@ -150,6 +150,7 @@ class memory_partition_unit {
   std::unordered_map<new_addr_type, mem_fetch*> m_sram_unready;
 
   std::vector<unsigned> m_bank_inflight;
+  std::vector<std::unordered_map<unsigned /*row*/, unsigned /*cnt*/>> m_bank_row_pending;
 
   int bank_id_from_mf(class mem_fetch* mf);
 
