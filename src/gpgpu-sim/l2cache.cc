@@ -558,7 +558,7 @@ void memory_partition_unit::dram_cycle() {
       const new_addr_type la = mf->get_addr();
       update_active_base_table(la);
 
-      if (pf_exists(la)) {
+      if (!mf->is_write() && pf_exists(la)) {
          if (pf_is_arrived(la)) {
             sram_delay_t s;
 	    s.req = mf;
@@ -585,13 +585,15 @@ void memory_partition_unit::dram_cycle() {
         mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_arbitration_metadata.borrow_credit(spid);
-
-        generate_prefetch_after_issue(mf);
+	
+	if (!mf->is_write()){
+            generate_prefetch_after_issue(mf);
+	    rlb_insert(mf->get_addr());
+	}
 	
 	int b = bank_id_from_mf(mf);
 	unsigned row = mf->get_tlx_addr().row;
 
-	rlb_insert(mf->get_addr());
   	++m_bank_inflight[b];
 	m_bank_row_pending[b][row]++;
 
@@ -1145,7 +1147,8 @@ void memory_sub_partition::visualizer_print(gzFile visualizer_file) {
 mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch* original) {
 
     mem_fetch* new_mf = new mem_fetch(original->get_access(),
-                                  &original->get_inst(),
+                                  //&original->get_inst(),
+				  NULL,
                                   original->get_streamID(),
                                   original->get_ctrl_size(),
                                   original->get_wid(),
@@ -1155,7 +1158,6 @@ mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch
                                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
                                   original->get_original_mf(),
                                   original->get_original_wr_mf());
-
 
     addrdec_t tlx;
     m_config->m_address_mapping.addrdec_tlx(addr, &tlx);
@@ -1307,7 +1309,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     auto gen_candidates = [&](new_addr_type seed_addr,
                               unsigned M_MAX,
                               unsigned N_MAX) {
-        const new_addr_type BIG_STRIDE   = 0x2000;
+        const new_addr_type BIG_STRIDE   = 0x1000;
         const new_addr_type SMALL_STRIDE = 0x20;
 
         new_addr_type base_addr = seed_addr & ~((new_addr_type)0xFF);
