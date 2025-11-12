@@ -117,6 +117,8 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
     m_active_base_table[i].last_addr = 0;
     m_active_base_table[i].timestamp = 0;
   }
+
+  m_pf_capacity = 512;
 }
 
 void memory_partition_unit::handle_memcpy_to_gpu(
@@ -1220,9 +1222,9 @@ void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
 
     if (!pf_addr) return;
 
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "[Prefetch Match] 0x%llx -> 0x%llx\n", curr, pf_addr);
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "[Prefetch Match] 0x%llx -> 0x%llx\n", curr, pf_addr);
+    //fclose(f);
 
 
     mem_fetch* pf = new_prefetch_req(pf_addr, trigger);
@@ -1309,7 +1311,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     auto gen_candidates = [&](new_addr_type seed_addr,
                               unsigned M_MAX,
                               unsigned N_MAX) {
-        const new_addr_type BIG_STRIDE   = 0x1000;
+        const new_addr_type BIG_STRIDE   = 0x1800;
         const new_addr_type SMALL_STRIDE = 0x20;
 
         new_addr_type base_addr = seed_addr & ~((new_addr_type)0xFF);
@@ -1509,4 +1511,8 @@ void memory_partition_unit::update_active_base_table(new_addr_type addr)
     m_active_base_table[lru_idx].base       = base;
     m_active_base_table[lru_idx].last_addr  = addr;
     m_active_base_table[lru_idx].timestamp  = now;
+}
+
+unsigned long long memory_partition_unit::now(){
+  return m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
 }

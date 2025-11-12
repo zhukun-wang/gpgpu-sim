@@ -117,22 +117,69 @@ class memory_partition_unit {
 
   enum prefetch_state_t { PF_PENDING = 0, PF_ARRIVED = 1 };
 
-  std::unordered_map<new_addr_type, prefetch_state_t> m_prefetch_table;
+  //std::unordered_map<new_addr_type, prefetch_state_t> m_prefetch_table;
+
+  std::list<new_addr_type> m_pf_lru;
+
+  struct PrefetchEntry {
+    prefetch_state_t state;
+    unsigned long long ts;
+    std::list<new_addr_type>::iterator it;
+  };
+  std::unordered_map<new_addr_type, PrefetchEntry> m_prefetch_table;
+
+  size_t m_pf_capacity = 512;
+
+  unsigned long long now();
 
   inline void pf_track_request(new_addr_type addr) {
-    m_prefetch_table[addr] = PF_PENDING;
-    //FILE *f = fopen("count.txt", "a");
-    //fprintf(f, "[Prefetch Create]0x%llx\n", addr);
-    //fclose(f);
+  auto it = m_prefetch_table.find(addr);
+  if (it != m_prefetch_table.end()) {
+    m_pf_lru.erase(it->second.it);
+    m_pf_lru.push_front(addr);
+    it->second.it = m_pf_lru.begin();
+    it->second.ts = now();
+    it->second.state = PF_PENDING; 
+    return;
   }
 
-  inline void pf_mark_arrived(new_addr_type addr) {
-    m_prefetch_table[addr] = PF_ARRIVED;
-    //FILE *f = fopen("count1.txt", "a");
-    //fprintf(f, "[Prefetch Arrive]0x%llx\n", addr);
-    //fclose(f);
-
+  if (m_prefetch_table.size() >= m_pf_capacity && !m_pf_lru.empty()) {
+    new_addr_type old = m_pf_lru.back();
+    m_pf_lru.pop_back();
+    m_prefetch_table.erase(old);
   }
+
+  m_pf_lru.push_front(addr);
+  PrefetchEntry e;
+  e.state = PF_PENDING;
+  e.ts = now();
+  e.it = m_pf_lru.begin();
+  m_prefetch_table.emplace(addr, e);
+  }
+
+inline void pf_mark_arrived(new_addr_type addr) {
+  auto it = m_prefetch_table.find(addr);
+  if (it == m_prefetch_table.end()) {
+    if (m_prefetch_table.size() >= m_pf_capacity && !m_pf_lru.empty()) {
+      new_addr_type old = m_pf_lru.back();
+      m_pf_lru.pop_back();
+      m_prefetch_table.erase(old);
+    }
+    m_pf_lru.push_front(addr);
+    PrefetchEntry e;
+    e.state = PF_ARRIVED;
+    e.ts = now();
+    e.it = m_pf_lru.begin();
+    m_prefetch_table.emplace(addr, e);
+    return;
+  }
+  
+  m_pf_lru.erase(it->second.it);
+  m_pf_lru.push_front(addr);
+  it->second.it = m_pf_lru.begin();
+  it->second.ts = now();
+  it->second.state = PF_ARRIVED;
+}
 
   inline bool pf_exists(new_addr_type addr) const {
     auto it = m_prefetch_table.find(addr);
@@ -141,7 +188,7 @@ class memory_partition_unit {
 
   inline bool pf_is_arrived(new_addr_type addr) const {
     auto it = m_prefetch_table.find(addr);
-    return (it != m_prefetch_table.end()) && (it->second == PF_ARRIVED);
+    return (it != m_prefetch_table.end()) && (it->second.state == PF_ARRIVED);
   }
 
   struct sram_delay_t { unsigned long long ready_cycle; mem_fetch* req; };
