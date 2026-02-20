@@ -382,6 +382,9 @@ void memory_partition_unit::dram_cycle() {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         	MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n",
               	w, dest_spid);
+		FILE *f = fopen("count.txt", "a");
+                fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - w->dram_entry_time);
+                fclose(f);
 
 		m_sram_unready.erase(it);
 		m_dram->return_queue_pop();
@@ -433,6 +436,9 @@ void memory_partition_unit::dram_cycle() {
 			m_sub_partition[pf_dest_spid]->dram_L2_queue_push(mf);
 			mf->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 			MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n", mf, pf_dest_spid);
+			FILE *f = fopen("count.txt", "a");
+                        fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf->dram_entry_time);
+                        fclose(f);
 			m_sram_ready.pop_front();
 		}
 	     }
@@ -479,6 +485,9 @@ void memory_partition_unit::dram_cycle() {
         MEMPART_DPRINTF(
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
+	FILE *f = fopen("count.txt", "a");
+        fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf_return->dram_entry_time);
+        fclose(f);
 	int b = bank_id_from_mf(mf_return);
 	unsigned row = mf_return->get_tlx_addr().row;
 
@@ -505,6 +514,9 @@ void memory_partition_unit::dram_cycle() {
 			    m_sub_partition[pf_dest_spid]->dram_L2_queue_push(mf);
 			    mf->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 			    MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n", mf, pf_dest_spid);
+			    FILE *f = fopen("count.txt", "a");
+			    fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf->dram_entry_time);
+			    fclose(f);
 			    m_sram_ready.pop_front();
 		    }
 	    }
@@ -522,6 +534,9 @@ void memory_partition_unit::dram_cycle() {
 		    m_sub_partition[pf_dest_spid]->dram_L2_queue_push(mf);
 		    mf->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 		    MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n", mf, pf_dest_spid);
+		    FILE *f = fopen("count.txt", "a");
+		    fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf->dram_entry_time);
+		    fclose(f);
 		    m_sram_ready.pop_front();
 	    }
     }
@@ -556,6 +571,8 @@ void memory_partition_unit::dram_cycle() {
       MEMPART_DPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
           spid);
+
+      mf->dram_entry_time = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
 
       const new_addr_type la = mf->get_addr();
       update_active_base_table(la);
@@ -1311,7 +1328,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
     auto gen_candidates = [&](new_addr_type seed_addr,
                               unsigned M_MAX,
                               unsigned N_MAX) {
-        const new_addr_type BIG_STRIDE   = 0x1800;
+        const new_addr_type BIG_STRIDE   = 0x1c00;
         const new_addr_type SMALL_STRIDE = 0x20;
 
         new_addr_type base_addr = seed_addr & ~((new_addr_type)0xFF);

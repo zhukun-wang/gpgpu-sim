@@ -136,6 +136,8 @@ class mem_fetch {
   bool is_prefetch() const { return m_is_prefetch; }
   void mark_prefetch() { m_is_prefetch = true; }
 
+  unsigned long long dram_entry_time = 0;
+
  private:
   // request source information
   unsigned m_request_uid;
