@@ -239,6 +239,7 @@ inline void pf_mark_arrived(new_addr_type addr) {
     struct PrefetchMemEntry {
     unsigned long long time;
     uint64_t addr;
+    unsigned long long chip;
   };
 
   std::vector<PrefetchMemEntry> g_prefetch_mem_table;

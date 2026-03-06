@@ -124,19 +124,15 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
     unsigned long long t;
     unsigned long long a;
+    unsigned long long c;
 
-    while (fscanf(f, "%llu %llx", &t, &a) == 2) {
+    while (fscanf(f, "%llu %llx %llu", &t, &a, &c) == 3) {
         PrefetchMemEntry entry;
         entry.time = t;
         entry.addr = (uint64_t)a;
+	entry.chip = c;
 
-	addrdec_t tlx;
-        m_config->m_address_mapping.addrdec_tlx(a, &tlx);
-
-        if (tlx.chip == m_id) {
-	  FILE *p = fopen("count1.txt", "a");
-          fprintf(p, "m_id: %u tlx.chip: %u\n", m_id, tlx.chip);
-          fclose(p);
+        if (entry.chip == m_id) {
           g_prefetch_mem_table.push_back(entry);
 	}
     }
@@ -627,8 +623,7 @@ void memory_partition_unit::dram_cycle() {
         m_arbitration_metadata.borrow_credit(spid);
 
 	if (!m_prefetch_template && !mf->is_write()) {
-    	  m_prefetch_template = new_prefetch_req(0, mf);
-    	  m_prefetch_template->set_addr(0);
+    	  make_prefetch_from_template(mf);
 	}
 	
 	if (!mf->is_write()){
