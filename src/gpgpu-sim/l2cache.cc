@@ -120,7 +120,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
   m_pf_capacity = 512;
 
-   FILE* f = fopen("prefetch_mem.txt", "r");
+   FILE* f = fopen("/accel-sim/accel-sim-framework/prefetch_mem.txt", "r");
 
     unsigned long long t;
     unsigned long long a;
@@ -129,8 +129,22 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
         PrefetchMemEntry entry;
         entry.time = t;
         entry.addr = (uint64_t)a;
-        g_prefetch_mem_table.push_back(entry);
+
+	addrdec_t tlx;
+        m_config->m_address_mapping.addrdec_tlx(a, &tlx);
+
+        if (tlx.chip == m_id) {
+	  FILE *p = fopen("count1.txt", "a");
+          fprintf(p, "m_id: %u tlx.chip: %u\n", m_id, tlx.chip);
+          fclose(p);
+          g_prefetch_mem_table.push_back(entry);
+	}
     }
+
+        FILE *p = fopen("count1.txt", "a");
+        fprintf(p, "ID: %u Number: %u\n", m_id, g_prefetch_mem_table.size());
+        fclose(p);
+
 
     fclose(f);
 
@@ -354,7 +368,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
 }
 
 void memory_partition_unit::dram_cycle() {
-  generate_prefetch_after_issue();
+  if (m_prefetch_template) {
+    generate_prefetch_after_issue();
+  }
       
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
@@ -1202,28 +1218,23 @@ mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch
 void memory_partition_unit::generate_prefetch_after_issue() {
 
     if (!m_prefetch_global_queue) return;
-    if (m_prefetch_global_queue->full()) return;
 
     for (size_t i = 0; i < g_prefetch_mem_table.size(); i++) {
-      if (g_prefetch_mem_table[i].time == m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) {
+      if (m_prefetch_global_queue->full()) return;
+      if (g_prefetch_mem_table[i].time > (m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle)) return;
+      if (g_prefetch_mem_table[i].time == (m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle)) {
         uint64_t a = g_prefetch_mem_table[i].addr;
 
-        addrdec_t tlx;
-        m_config->m_address_mapping.addrdec_tlx(a, &tlx);
+        uint64_t pf_addr = a;
+	mem_fetch* pf = new_prefetch_req(pf_addr, m_prefetch_template);
+	pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
+               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+	m_prefetch_global_queue->push(pf);
+	pf_track_request(pf_addr);
 
-        if (tlx.chip == m_id) {
-            uint64_t pf_addr = a;
-	    mem_fetch* pf = new_prefetch_req(pf_addr, m_prefetch_template);
-	    pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-	    m_prefetch_global_queue->push(pf);
-	    pf_track_request(pf_addr);
-
-	    FILE *f = fopen("count1.txt", "a");
-	    fprintf(f, "Prefetch Success\n");
-	    fclose(f);
-
-        }
+	//FILE *f = fopen("count1.txt", "a");
+	//fprintf(f, "Prefetch Success\n");
+	//fclose(f);
       }
     }
 }
@@ -1508,7 +1519,6 @@ unsigned long long memory_partition_unit::now(){
 }
 
 void memory_partition_unit::make_prefetch_from_template(mem_fetch* original) {
-    if (!m_prefetch_template) return;
 
     m_prefetch_template = new mem_fetch(original->get_access(),
                                   //&original->get_inst(),
@@ -1522,4 +1532,9 @@ void memory_partition_unit::make_prefetch_from_template(mem_fetch* original) {
                                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
                                   original->get_original_mf(),
                                   original->get_original_wr_mf());
+
+    FILE *f = fopen("count1.txt", "a");
+    fprintf(f, "Template Success\n");
+    fclose(f);
+
 }
