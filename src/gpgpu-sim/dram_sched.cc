@@ -73,7 +73,7 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
   m_stream_tbl.resize(m_config->nbk);
  for (auto &v : m_stream_tbl) v.resize(MAX_STREAMS_PER_BANK);
 
- m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 100, 1);
+ //m_oracle.load("/accel-sim/accel-sim-framework/oracle_trace.txt", 100, 1);
 }
 
 void frfcfs_scheduler::add_req(dram_req_t *req) {
@@ -91,6 +91,12 @@ void frfcfs_scheduler::add_req(dram_req_t *req) {
     m_queue[req->bk].push_front(req);
     std::list<dram_req_t *>::iterator ptr = m_queue[req->bk].begin();
     m_bins[req->bk][req->row].push_front(ptr);  // newest reqs to the front
+  }
+
+  if(!req->data->is_write()){
+    FILE *f = fopen("count.txt", "a");
+    fprintf(f, "0x%llx %llu %u\n", req->data->get_addr(), m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle, m_dram->id);
+    fclose(f);
   }
 
 /*      	
