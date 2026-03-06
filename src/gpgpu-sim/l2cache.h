@@ -112,7 +112,7 @@ class memory_partition_unit {
   class gpgpu_sim *get_mgpu() const { return m_gpu; }
 
   fifo_pipeline<mem_fetch>* m_prefetch_global_queue = nullptr;
-  void generate_prefetch_after_issue(mem_fetch* trigger);
+  void generate_prefetch_after_issue();
   mem_fetch* new_prefetch_req(new_addr_type addr, mem_fetch* original);
 
   enum prefetch_state_t { PF_PENDING = 0, PF_ARRIVED = 1 };
@@ -235,6 +235,17 @@ inline void pf_mark_arrived(new_addr_type addr) {
   int find_active_base_slot(new_addr_type base);
 
   void update_active_base_table(new_addr_type addr);
+
+    struct PrefetchMemEntry {
+    unsigned long long time;
+    uint64_t addr;
+  };
+
+  std::vector<PrefetchMemEntry> g_prefetch_mem_table;
+
+
+  mem_fetch* m_prefetch_template = nullptr;
+  void make_prefetch_from_template(mem_fetch* original);
 
  private:
   unsigned m_id;

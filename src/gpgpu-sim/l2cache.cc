@@ -119,6 +119,23 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
   }
 
   m_pf_capacity = 512;
+
+   FILE* f = fopen("prefetch_mem.txt", "r");
+
+    unsigned long long t;
+    unsigned long long a;
+
+    while (fscanf(f, "%llu %llx", &t, &a) == 2) {
+        PrefetchMemEntry entry;
+        entry.time = t;
+        entry.addr = (uint64_t)a;
+        g_prefetch_mem_table.push_back(entry);
+    }
+
+    fclose(f);
+
+    m_prefetch_template = nullptr;
+
 }
 
 void memory_partition_unit::handle_memcpy_to_gpu(
@@ -337,13 +354,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
 }
 
 void memory_partition_unit::dram_cycle() {
-    //FILE *f = fopen("count.txt", "a");
-    //for (unsigned i = 0; i < m_config->nbk; i++) {
-    //    fprintf(f, "%u ", m_bank_inflight[i]);
-    //} 
-    //fprintf(f, "\n");
-    //fclose(f);
-
+  generate_prefetch_after_issue();
       
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
@@ -588,12 +599,6 @@ void memory_partition_unit::dram_cycle() {
 
 	  } else {
 	    m_sram_unready.emplace(la, mf);
-	   //FILE *f = fopen("count.txt", "a");
-           //fprintf(f, "[Unready Create]0x%llx\n", la);
-           //fclose(f);
-
-	    //break;
-
 	  }
       } else {
         dram_delay_t d;
@@ -604,9 +609,14 @@ void memory_partition_unit::dram_cycle() {
         mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_arbitration_metadata.borrow_credit(spid);
+
+	if (!m_prefetch_template && !mf->is_write()) {
+    	  m_prefetch_template = new_prefetch_req(0, mf);
+    	  m_prefetch_template->set_addr(0);
+	}
 	
 	if (!mf->is_write()){
-            generate_prefetch_after_issue(mf);
+            //generate_prefetch_after_issue(mf);
 	    rlb_insert(mf->get_addr());
 	}
 	
@@ -734,6 +744,7 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_dram_L2_queue = new fifo_pipeline<mem_fetch>("dram-to-L2", 0, dram_L2);
   m_L2_icnt_queue = new fifo_pipeline<mem_fetch>("L2-to-icnt", 0, L2_icnt);
   wb_addr = -1;
+
 }
 
 memory_sub_partition::~memory_sub_partition() {
@@ -1188,71 +1199,33 @@ mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch
     return new_mf;
 }
 
-void memory_partition_unit::generate_prefetch_after_issue(mem_fetch* trigger) {
+void memory_partition_unit::generate_prefetch_after_issue() {
 
     if (!m_prefetch_global_queue) return;
     if (m_prefetch_global_queue->full()) return;
-    //if (!m_oracle.enabled()) return;
 
-    //new_addr_type base = trigger->get_addr();
-    //new_addr_type pf_addr = base + 32; 
+    for (size_t i = 0; i < g_prefetch_mem_table.size(); i++) {
+      if (g_prefetch_mem_table[i].time == m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) {
+        uint64_t a = g_prefetch_mem_table[i].addr;
 
-    //FILE *f = fopen("count.txt", "a");
-    //fprintf(f, "[Original Request]0x%llx\n", base);
-    //fclose(f);
-    
-    /*
-    auto decoder = [this](uint64_t a) -> OracleDecodedAddr {
         addrdec_t tlx;
         m_config->m_address_mapping.addrdec_tlx(a, &tlx);
-	unsigned banks = m_config->nbk;
-	int bk;
 
-	switch (m_config->dram_bnk_indexing_policy) {
-          case LINEAR_BK_INDEX: {
-            bk = tlx.bk;
-            break;
-          }
-          case BITWISE_XORING_BK_INDEX: {
-            bk = bitwise_hash_function(tlx.row, tlx.bk, banks);
-            assert(bk < banks);
-            break;
-          }
-          case IPOLY_BK_INDEX: {
-            bk = ipoly_hash_function(tlx.row, tlx.bk, banks);
-            assert(bk < banks);
-	  }
-          case CUSTOM_BK_INDEX:
-            break;
-          default:
-            assert("\nUndefined bank index function.\n" && 0);
-            break;
-        }
-
-        return OracleDecodedAddr{tlx.chip, bk};
-    };
-    */
-
-    const uint64_t curr = trigger->get_addr();
-    //uint64_t pf_addr = m_oracle.pick_next_addr_blp(curr, m_id, m_bank_inflight, decoder);
-    uint64_t pf_addr = pick_prefetch_addr_from_pattern(curr, m_bank_inflight);
-
-    if (!pf_addr) return;
-
-    //FILE *f = fopen("count.txt", "a");
-    //fprintf(f, "[Prefetch Match] 0x%llx -> 0x%llx\n", curr, pf_addr);
-    //fclose(f);
-
-
-    mem_fetch* pf = new_prefetch_req(pf_addr, trigger);
-    if (!pf) return;
-    if (m_id != pf->get_tlx_addr().chip) return;
-
-    pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
+        if (tlx.chip == m_id) {
+            uint64_t pf_addr = a;
+	    mem_fetch* pf = new_prefetch_req(pf_addr, m_prefetch_template);
+	    pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    m_prefetch_global_queue->push(pf);
+	    m_prefetch_global_queue->push(pf);
+	    pf_track_request(pf_addr);
 
-    pf_track_request(pf_addr);
+	    FILE *f = fopen("count1.txt", "a");
+	    fprintf(f, "Prefetch Success\n");
+	    fclose(f);
+
+        }
+      }
+    }
 }
 
 int memory_partition_unit::bank_id_from_mf(class mem_fetch* mf) {
@@ -1532,4 +1505,21 @@ void memory_partition_unit::update_active_base_table(new_addr_type addr)
 
 unsigned long long memory_partition_unit::now(){
   return m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+}
+
+void memory_partition_unit::make_prefetch_from_template(mem_fetch* original) {
+    if (!m_prefetch_template) return;
+
+    m_prefetch_template = new mem_fetch(original->get_access(),
+                                  //&original->get_inst(),
+				  NULL,
+                                  original->get_streamID(),
+                                  original->get_ctrl_size(),
+                                  original->get_wid(),
+                                  original->get_sid(),
+                                  original->get_tpc(),
+                                  original->get_mem_config(),
+                                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                                  original->get_original_mf(),
+                                  original->get_original_wr_mf());
 }
