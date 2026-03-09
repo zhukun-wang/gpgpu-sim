@@ -112,7 +112,7 @@ class memory_partition_unit {
   class gpgpu_sim *get_mgpu() const { return m_gpu; }
 
   fifo_pipeline<mem_fetch>* m_prefetch_global_queue = nullptr;
-  void generate_prefetch_after_issue();
+  mem_fetch* generate_prefetch_after_issue();
   mem_fetch* new_prefetch_req(new_addr_type addr, mem_fetch* original);
 
   enum prefetch_state_t { PF_PENDING = 0, PF_ARRIVED = 1 };
@@ -128,7 +128,7 @@ class memory_partition_unit {
   };
   std::unordered_map<new_addr_type, PrefetchEntry> m_prefetch_table;
 
-  size_t m_pf_capacity = 512;
+  size_t m_pf_capacity = 1000000;
 
   unsigned long long now();
 
@@ -217,7 +217,7 @@ inline void pf_mark_arrived(new_addr_type addr) {
 
   bool rlb_contains(new_addr_type line);
 
-  new_addr_type pick_prefetch_addr_from_pattern(new_addr_type curr_addr, const std::vector<unsigned> &bank_inflight);
+  new_addr_type pick_prefetch_addr_from_pattern();
 
   static const unsigned ACTIVE_BASE_TABLE_SIZE = 32;
 
@@ -237,16 +237,26 @@ inline void pf_mark_arrived(new_addr_type addr) {
   void update_active_base_table(new_addr_type addr);
 
     struct PrefetchMemEntry {
-    unsigned long long time;
+    //unsigned long long time;
+    uint64_t base;
     uint64_t addr;
-    unsigned long long chip;
+    //unsigned long long chip;
   };
 
   std::vector<PrefetchMemEntry> g_prefetch_mem_table;
 
+ struct PoolCand {
+    new_addr_type addr;
+    int bank;
+    unsigned row;
+  };
+
+  std::vector<PoolCand> mpool;
 
   mem_fetch* m_prefetch_template = nullptr;
   void make_prefetch_from_template(mem_fetch* original);
+
+  void active_mpool(); 
 
  private:
   unsigned m_id;

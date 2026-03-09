@@ -2260,6 +2260,7 @@ void print_splash() {
     fclose(fopen("count1.txt", "w"));
     fclose(fopen("throughput_report.txt", "w"));
     fclose(fopen("latency_report.txt", "w"));
+    fclose(fopen("/accel-sim/accel-sim-framework/mrecord.txt", "w"));
     splash_printed = 1;
   }
 }

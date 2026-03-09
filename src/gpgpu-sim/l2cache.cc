@@ -118,28 +118,29 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
     m_active_base_table[i].timestamp = 0;
   }
 
-  m_pf_capacity = 512;
-
-   FILE* f = fopen("/accel-sim/accel-sim-framework/prefetch_mem.txt", "r");
+   FILE* f = fopen("/accel-sim/accel-sim-framework/mpool.txt", "r");
 
     unsigned long long t;
     unsigned long long a;
-    unsigned long long c;
+    unsigned long long b;
 
-    while (fscanf(f, "%llu %llx %llu", &t, &a, &c) == 3) {
+    while (fscanf(f, "%llu %llx %llx", &t, &b, &a) == 3) {
         PrefetchMemEntry entry;
-        entry.time = t;
-        entry.addr = (uint64_t)a;
-	entry.chip = c;
+        //entry.time = t;
+        entry.base = (uint64_t)b;
+	entry.addr = (uint64_t)a;
 
-        if (entry.chip == m_id) {
+	addrdec_t tlx;
+	m_config->m_address_mapping.addrdec_tlx(a, &tlx);
+
+        if (tlx.chip == m_id) {
           g_prefetch_mem_table.push_back(entry);
 	}
     }
 
-        FILE *p = fopen("count1.txt", "a");
-        fprintf(p, "ID: %u Number: %u\n", m_id, g_prefetch_mem_table.size());
-        fclose(p);
+        //FILE *p = fopen("count1.txt", "a");
+        //fprintf(p, "ID: %u Number: %u\n", m_id, g_prefetch_mem_table.size());
+        //fclose(p);
 
 
     fclose(f);
@@ -364,10 +365,6 @@ void memory_partition_unit::simple_dram_model_cycle() {
 }
 
 void memory_partition_unit::dram_cycle() {
-  if (m_prefetch_template) {
-    generate_prefetch_after_issue();
-  }
-      
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
   m_stats->report_throughput(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -598,6 +595,15 @@ void memory_partition_unit::dram_cycle() {
       mf->dram_entry_time = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
 
       const new_addr_type la = mf->get_addr();
+
+      if(!mf->is_write()){
+        for (size_t i = 0; i < m_gpu->mrecord.size(); ++i) {
+    	  m_gpu->mrecord[i].push_back(la);
+        }
+      }
+
+      active_mpool();
+
       update_active_base_table(la);
 
       if (!mf->is_write() && pf_exists(la)) {
@@ -627,7 +633,6 @@ void memory_partition_unit::dram_cycle() {
 	}
 	
 	if (!mf->is_write()){
-            //generate_prefetch_after_issue(mf);
 	    rlb_insert(mf->get_addr());
 	}
 	
@@ -645,11 +650,11 @@ void memory_partition_unit::dram_cycle() {
   }
   //}
 
-  if (!issued && m_prefetch_global_queue && !m_prefetch_global_queue->empty()) {
-    mem_fetch* pf = m_prefetch_global_queue->top();
+/*
+  if (!issued) {
+    mem_fetch* pf = generate_prefetch_after_issue();
 
-    if (!m_dram->full(false)) {
-        m_prefetch_global_queue->pop();
+    if (!m_dram->full(false) && pf) {
 
         dram_delay_t d;
         d.req = pf;
@@ -667,7 +672,7 @@ void memory_partition_unit::dram_cycle() {
 	m_bank_row_pending[b][row]++;
     }
   }
-
+*/
   // DRAM latency queue
   if (!m_dram_latency_queue.empty() &&
       ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
@@ -1210,28 +1215,78 @@ mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch
     return new_mf;
 }
 
-void memory_partition_unit::generate_prefetch_after_issue() {
+mem_fetch* memory_partition_unit::generate_prefetch_after_issue() {
 
-    if (!m_prefetch_global_queue) return;
+    uint64_t pf_addr = pick_prefetch_addr_from_pattern();
 
-    for (size_t i = 0; i < g_prefetch_mem_table.size(); i++) {
-      if (m_prefetch_global_queue->full()) return;
-      if (g_prefetch_mem_table[i].time > (m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle)) return;
-      if (g_prefetch_mem_table[i].time == (m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle)) {
-        uint64_t a = g_prefetch_mem_table[i].addr;
+    if (pf_addr == 0) return nullptr;;
 
-        uint64_t pf_addr = a;
-	mem_fetch* pf = new_prefetch_req(pf_addr, m_prefetch_template);
-	pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
-               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-	m_prefetch_global_queue->push(pf);
-	pf_track_request(pf_addr);
+    mem_fetch* pf = new_prefetch_req(pf_addr, m_prefetch_template);
 
-	//FILE *f = fopen("count1.txt", "a");
-	//fprintf(f, "Prefetch Success\n");
-	//fclose(f);
-      }
+    pf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
+                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+
+    pf_track_request(pf_addr);
+
+    return pf;
+
+}
+
+void memory_partition_unit::active_mpool() {
+
+    auto &rec = m_gpu->mrecord[m_id];
+
+    for (auto rec_it = rec.begin(); rec_it != rec.end(); ) {
+
+        new_addr_type b = *rec_it;
+
+        for (auto it = g_prefetch_mem_table.begin();
+             it != g_prefetch_mem_table.end(); ) {
+
+            if (it->base == b) {
+
+		addrdec_t tlx;
+                m_config->m_address_mapping.addrdec_tlx(it->addr, &tlx);
+
+                int bk;
+                switch (m_config->dram_bnk_indexing_policy) {
+                    case LINEAR_BK_INDEX:
+                        bk = tlx.bk;
+                        break;
+                    case BITWISE_XORING_BK_INDEX:
+                        bk = bitwise_hash_function(tlx.row, tlx.bk, m_config->nbk);
+                        assert(bk < (int)m_config->nbk);
+                        break;
+                    case IPOLY_BK_INDEX:
+                        bk = ipoly_hash_function(tlx.row, tlx.bk, m_config->nbk);
+                        assert(bk < (int)m_config->nbk);
+                        break;
+                    case CUSTOM_BK_INDEX:
+                        bk = tlx.bk;
+                        break;
+                    default:
+                        assert(0 && "Undefined bank index function.");
+                        bk = 0;
+                        break;
+                }
+
+                PoolCand cand;
+                cand.addr = it->base;
+                cand.bank = bk;
+                cand.row = tlx.row;
+                mpool.push_back(cand);
+
+                it = g_prefetch_mem_table.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        rec_it = rec.erase(rec_it);
     }
+
+    FILE *p = fopen("count1.txt", "a");
+    fprintf(p, "ID: %u Number: %u Pool Number: %u\n", m_id, g_prefetch_mem_table.size(), mpool.size());
+    fclose(p);
 }
 
 int memory_partition_unit::bank_id_from_mf(class mem_fetch* mf) {
@@ -1287,125 +1342,11 @@ void memory_partition_unit::rlb_insert(new_addr_type line) {
     m_rlb_head = (m_rlb_head + 1) % RLB_SIZE;
 }
 
-new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
-    new_addr_type curr_addr,
-    const std::vector<unsigned> &bank_inflight)
+new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 {
-    if (bank_inflight.empty()) return 0;
 
-    struct CandInfo {
-        new_addr_type addr;
-        int bank;
-	unsigned row;
-    };
-
-    std::vector<CandInfo> cand_list;
-    cand_list.reserve(512);
-
-    std::set<new_addr_type> seen;
-
-    auto gen_candidates = [&](new_addr_type seed_addr,
-                              unsigned M_MAX,
-                              unsigned N_MAX) {
-        const new_addr_type BIG_STRIDE   = 0x1c00;
-        const new_addr_type SMALL_STRIDE = 0x20;
-
-        new_addr_type base_addr = seed_addr & ~((new_addr_type)0xFF);
-
-        for (unsigned m = 0; m < M_MAX; ++m) {
-            for (unsigned n = 0; n < N_MAX; ++n) {
-
-                new_addr_type cand = base_addr + m * BIG_STRIDE + n * SMALL_STRIDE;
-
-                if (cand == seed_addr)
-                    continue;
-
-                if (rlb_contains(cand))
-                    continue;
-
-                if (pf_exists(cand))
-                    continue;
-
-                addrdec_t tlx;
-                m_config->m_address_mapping.addrdec_tlx(cand, &tlx);
-                if (tlx.chip != m_id)
-                    continue;
-
-                int bk;
-                switch (m_config->dram_bnk_indexing_policy) {
-                    case LINEAR_BK_INDEX:
-                        bk = tlx.bk;
-                        break;
-                    case BITWISE_XORING_BK_INDEX:
-                        bk = bitwise_hash_function(tlx.row, tlx.bk, m_config->nbk);
-                        assert(bk < (int)m_config->nbk);
-                        break;
-                    case IPOLY_BK_INDEX:
-                        bk = ipoly_hash_function(tlx.row, tlx.bk, m_config->nbk);
-                        assert(bk < (int)m_config->nbk);
-                        break;
-                    case CUSTOM_BK_INDEX:
-                        bk = tlx.bk;
-                        break;
-                    default:
-                        assert(0 && "Undefined bank index function.");
-                        bk = 0;
-                        break;
-                }
-
-                if ((unsigned)bk >= bank_inflight.size())
-                    continue;
-
-                if (seen.find(cand) != seen.end())
-                    continue;
-                seen.insert(cand);
-
-                CandInfo info;
-                info.addr = cand;
-                info.bank = bk;
-		info.row = tlx.row;
-                cand_list.push_back(info);
-            }
-        }
-    };
-
-    gen_candidates(curr_addr, 8, 8);
-
-    for (unsigned i = 0; i < ACTIVE_BASE_TABLE_SIZE; ++i) {
-        if (!m_active_base_table[i].valid)
-            continue;
-
-        new_addr_type seed = m_active_base_table[i].last_addr;
-        gen_candidates(seed, 4, 8);
-    }
-
-    if (cand_list.empty())
+    if (mpool.empty())
         return 0;
-
-/*
-    std::vector<unsigned> bank_order;
-    bank_order.reserve(bank_inflight.size());
-    for (unsigned b = 0; b < bank_inflight.size(); ++b) {
-        bank_order.push_back(b);
-    }
-
-    std::sort(bank_order.begin(), bank_order.end(),
-              [&](unsigned a, unsigned b) {
-                  return bank_inflight[a] < bank_inflight[b];
-              });
-
-    for (unsigned idx = 0; idx < bank_order.size(); ++idx) {
-        unsigned bk = bank_order[idx];
-        if (bank_inflight[bk] > 4)
-            break;
-
-        for (size_t c = 0; c < cand_list.size(); ++c) {
-            if (cand_list[c].bank == (int)bk) {
-                return cand_list[c].addr;
-            }
-        }
-    }
-*/
 
     auto has_pending_row = [&](int bk, unsigned row) -> bool {
         if ((unsigned)bk >= m_bank_row_pending.size()) return false;
@@ -1413,41 +1354,60 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern(
         return mp.find(row) != mp.end();
     };
 
-    for (const auto &c : cand_list) {
-        if ((unsigned)c.bank < bank_inflight.size() && bank_inflight[c.bank] == 0) {
+    for (const auto &c : mpool) {
+        if ((unsigned)c.bank < m_bank_inflight.size() && m_bank_inflight[c.bank] == 0) {
             return c.addr;
         }
     }
 
-    for (const auto &c : cand_list) {
-        if ((unsigned)c.bank < bank_inflight.size()
-            && bank_inflight[c.bank] < 4
+    for (const auto &c : mpool) {
+        if ((unsigned)c.bank < m_bank_inflight.size()
+            && m_bank_inflight[c.bank] < 4
             && has_pending_row(c.bank, c.row)) {
             return c.addr;
         }
     }
 
-    int    best_idx = -1;
-    unsigned best_load = UINT_MAX;
-    for (int i = 0; i < (int)cand_list.size(); ++i) {
-        const auto &c = cand_list[i];
-        if ((unsigned)c.bank >= bank_inflight.size()) continue;
-        unsigned load = bank_inflight[c.bank];
-        if (load < best_load) {
-            best_load = load;
-            best_idx = i;
-            if (best_load == 0) break; 
+    int bank_count = m_bank_inflight.size();
+
+    int sorted_ids[16];  
+
+    for (int i = 0; i < bank_count; ++i) {
+        sorted_ids[i] = i;
+    }
+
+    for (int i = 0; i < bank_count - 1; ++i) {
+        int min_idx = i;
+        for (int j = i + 1; j < bank_count; ++j) {
+            if (m_bank_inflight[sorted_ids[j]] <
+                m_bank_inflight[sorted_ids[min_idx]]) {
+                min_idx = j;
+            }
+        }
+
+        if (min_idx != i) {
+            int tmp = sorted_ids[i];
+            sorted_ids[i] = sorted_ids[min_idx];
+            sorted_ids[min_idx] = tmp;
         }
     }
 
-    if (best_idx >= 0) {
-        if (best_load > 6) {
-            return 0;   
+    for (int i = 0; i < bank_count; ++i) {
+  
+        int bk = sorted_ids[i];
+
+        if (m_bank_inflight[bk] > 6)
+            break;
+
+        for (const auto &c : mpool) {
+            if ((unsigned)c.bank == (unsigned)bk) {
+                return c.addr;
+            }
         }
-        return cand_list[best_idx].addr;
     }
 
     return 0;
+
 }
 
 new_addr_type memory_partition_unit::align_active_base(new_addr_type addr)
