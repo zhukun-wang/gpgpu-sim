@@ -610,6 +610,11 @@ void memory_partition_unit::dram_cycle() {
       update_active_base_table(la);
 
       if (!mf->is_write() && pf_exists(la)) {
+
+	 FILE *p = fopen("count1.txt", "a");
+         fprintf(p, "Prefetch Hit\n");
+         fclose(p);
+
          if (pf_is_arrived(la)) {
             sram_delay_t s;
 	    s.req = mf;
@@ -630,10 +635,6 @@ void memory_partition_unit::dram_cycle() {
         mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_arbitration_metadata.borrow_credit(spid);
-
-	if (!m_prefetch_template && !mf->is_write()) {
-    	  make_prefetch_from_template(mf);
-	}
 	
 	if (!mf->is_write()){
 	    rlb_insert(mf->get_addr());
@@ -1245,9 +1246,9 @@ mem_fetch* memory_partition_unit::generate_prefetch_after_issue() {
 
     pf_track_request(pf_addr);
 
-    FILE *p = fopen("count1.txt", "a");
-    fprintf(p, "Prefetch: ID: %u Pool Rest: %u\n", m_id, mpool.size());
-    fclose(p);
+    //FILE *p = fopen("count1.txt", "a");
+    //fprintf(p, "Prefetch: ID: %u Pool Rest: %u\n", m_id, mpool.size());
+    //fclose(p);
 
 
     return pf;
@@ -1293,7 +1294,7 @@ void memory_partition_unit::active_mpool() {
                 }
 
                 PoolCand cand;
-                cand.addr = it->base;
+                cand.addr = it->addr;
                 cand.bank = bk;
                 cand.row = tlx.row;
                 mpool.push_back(cand);
