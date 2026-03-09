@@ -330,6 +330,9 @@ void memory_partition_unit::dram_cycle() {
         MEMPART_DPRINTF(
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
+	FILE *f = fopen("count.txt", "a");
+        fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf_return->dram_entry_time);
+        fclose(f);
       }
       m_dram->return_queue_pop();
     }
@@ -362,6 +365,9 @@ void memory_partition_unit::dram_cycle() {
       MEMPART_DPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
           spid);
+
+      mf->dram_entry_time = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+
       dram_delay_t d;
       d.req = mf;
       d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +

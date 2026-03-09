@@ -132,6 +132,8 @@ class mem_fetch {
 
   const mem_access_t& get_access() const { return m_access; }
 
+  unsigned long long dram_entry_time = 0;
+
  private:
   // request source information
   unsigned m_request_uid;

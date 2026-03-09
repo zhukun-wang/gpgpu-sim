@@ -94,9 +94,9 @@ void frfcfs_scheduler::add_req(dram_req_t *req) {
   }
 
   if(!req->data->is_write()){
-    FILE *f = fopen("count.txt", "a");
-    fprintf(f, "0x%llx %llu %u\n", req->data->get_addr(), m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle, m_dram->id);
-    fclose(f);
+    //FILE *f = fopen("count.txt", "a");
+    //fprintf(f, "0x%llx %llu %u\n", req->data->get_addr(), m_dram->m_gpu->gpu_sim_cycle + m_dram->m_gpu->gpu_tot_sim_cycle, m_dram->id);
+    //fclose(f);
   }
 
 /*      	
