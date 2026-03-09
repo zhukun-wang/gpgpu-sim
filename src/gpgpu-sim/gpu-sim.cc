@@ -2045,6 +2045,14 @@ void gpgpu_sim::cycle() {
       } else {
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
+
+      if (mf) {
+        new_addr_type la = mf->get_addr();
+        for (unsigned pid = 0; pid < m_memory_config->m_n_mem; ++pid) {
+          m_memory_partition_unit[pid]->broadcast(la);
+        }
+      }
+
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);

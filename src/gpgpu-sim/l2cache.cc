@@ -596,13 +596,16 @@ void memory_partition_unit::dram_cycle() {
 
       const new_addr_type la = mf->get_addr();
 
-      if(!mf->is_write()){
-        for (size_t i = 0; i < m_gpu->mrecord.size(); ++i) {
-    	  m_gpu->mrecord[i].push_back(la);
+      active_mpool();
+
+      for (auto it = mpool.begin(); it != mpool.end(); ) {
+        if (it->addr == la) {
+            it = mpool.erase(it);
+            break;
+        } else {
+            ++it;
         }
       }
-
-      active_mpool();
 
       update_active_base_table(la);
 
@@ -650,29 +653,33 @@ void memory_partition_unit::dram_cycle() {
   }
   //}
 
-/*
+
   if (!issued) {
-    mem_fetch* pf = generate_prefetch_after_issue();
 
-    if (!m_dram->full(false) && pf) {
+    if (!m_dram->full(false)) {
 
-        dram_delay_t d;
-        d.req = pf;
-        d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+	mem_fetch* pf = generate_prefetch_after_issue();
+
+	if(pf){
+
+          dram_delay_t d;
+          d.req = pf;
+          d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                         m_config->dram_latency;
-        m_dram_latency_queue.push_back(d);
-        pf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
+          m_dram_latency_queue.push_back(d);
+          pf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
-	int b = bank_id_from_mf(pf);
-	unsigned row = pf->get_tlx_addr().row;
+	  int b = bank_id_from_mf(pf);
+	  unsigned row = pf->get_tlx_addr().row;
 
-	rlb_insert(pf->get_addr());
-	++m_bank_inflight[b];
-	m_bank_row_pending[b][row]++;
+	  rlb_insert(pf->get_addr());
+	  ++m_bank_inflight[b];
+	  m_bank_row_pending[b][row]++;
+	}
     }
   }
-*/
+
   // DRAM latency queue
   if (!m_dram_latency_queue.empty() &&
       ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
@@ -1217,9 +1224,19 @@ mem_fetch* memory_partition_unit::new_prefetch_req(new_addr_type addr, mem_fetch
 
 mem_fetch* memory_partition_unit::generate_prefetch_after_issue() {
 
+
     uint64_t pf_addr = pick_prefetch_addr_from_pattern();
 
-    if (pf_addr == 0) return nullptr;;
+    if (pf_addr == 0) return nullptr;
+
+    for (auto it = mpool.begin(); it != mpool.end(); ) {
+        if (it->addr == pf_addr) {
+            it = mpool.erase(it);  
+            break;           
+        } else {
+            ++it;
+        }
+    }
 
     mem_fetch* pf = new_prefetch_req(pf_addr, m_prefetch_template);
 
@@ -1228,13 +1245,18 @@ mem_fetch* memory_partition_unit::generate_prefetch_after_issue() {
 
     pf_track_request(pf_addr);
 
+    FILE *p = fopen("count1.txt", "a");
+    fprintf(p, "Prefetch: ID: %u Pool Rest: %u\n", m_id, mpool.size());
+    fclose(p);
+
+
     return pf;
 
 }
 
 void memory_partition_unit::active_mpool() {
 
-    auto &rec = m_gpu->mrecord[m_id];
+    auto &rec = mrecord;
 
     for (auto rec_it = rec.begin(); rec_it != rec.end(); ) {
 
@@ -1283,10 +1305,6 @@ void memory_partition_unit::active_mpool() {
         }
         rec_it = rec.erase(rec_it);
     }
-
-    FILE *p = fopen("count1.txt", "a");
-    fprintf(p, "ID: %u Number: %u Pool Number: %u\n", m_id, g_prefetch_mem_table.size(), mpool.size());
-    fclose(p);
 }
 
 int memory_partition_unit::bank_id_from_mf(class mem_fetch* mf) {

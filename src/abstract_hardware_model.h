@@ -598,8 +598,6 @@ class gpgpu_t {
   unsigned long long gpu_sim_cycle;
   unsigned long long gpu_tot_sim_cycle;
 
-  std::vector<std::vector<new_addr_type>> mrecord;
-
   void *gpu_malloc(size_t size);
   void *gpu_mallocarray(size_t count);
   void gpu_memset(size_t dst_start_addr, int c, size_t count);

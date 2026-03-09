@@ -258,6 +258,12 @@ inline void pf_mark_arrived(new_addr_type addr) {
 
   void active_mpool(); 
 
+  std::vector<unsigned long long> mrecord;
+
+  void broadcast(unsigned long long addr) {
+    mrecord.push_back(addr);
+  }
+
  private:
   unsigned m_id;
   const memory_config *m_config;
