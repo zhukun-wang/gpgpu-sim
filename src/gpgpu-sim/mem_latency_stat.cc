@@ -557,10 +557,9 @@ void memory_stats_t::report_throughput(unsigned long long current_cycle) {
         FILE* log = fopen("throughput_report.txt", "a");
 
         //fprintf(log, "%12llu   ", current_cycle);
-        fprintf(log, "%8.3f   ", ((double)L2_to_DRAM_bytes * 1.132) / cycle_resolution);
-        fprintf(log, "%8.3f   ",((double)DRAM_to_L2_bytes * 1.132) / cycle_resolution);
+        //fprintf(log, "%8.3f   ", ((double)L2_to_DRAM_bytes * 1.132) / cycle_resolution);
+        //fprintf(log, "%8.3f   ",((double)DRAM_to_L2_bytes * 1.132) / cycle_resolution);
         fprintf(log, "%8.3f\n", (((double)L2_to_DRAM_bytes + (double)DRAM_to_L2_bytes) * 1.132) / cycle_resolution);
-        //fprintf(log, "%5llu   %5llu\n", read_count, write_count);
 
         fclose(log);
 

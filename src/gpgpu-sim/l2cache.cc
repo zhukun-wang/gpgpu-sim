@@ -330,7 +330,7 @@ void memory_partition_unit::dram_cycle() {
         MEMPART_DPRINTF(
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
-	FILE *f = fopen("count.txt", "a");
+	FILE *f = fopen("d_latency.txt", "a");
         fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf_return->dram_entry_time);
         fclose(f);
       }

@@ -2256,9 +2256,11 @@ void print_splash() {
   if (!splash_printed) {
     fprintf(stdout, "\n\n        *** %s [build %s] ***\n\n\n",
             g_gpgpusim_version_string, g_gpgpusim_build_string);
-    fclose(fopen("count.txt", "w"));
+    fclose(fopen("test.txt", "w"));
     fclose(fopen("throughput_report.txt", "w"));
     fclose(fopen("latency_report.txt", "w"));
+    fclose(fopen("d_latency.txt", "w"));
+    fclose(fopen("mtrace.txt", "w"));
     splash_printed = 1;
   }
 }
