@@ -118,7 +118,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
     m_active_base_table[i].timestamp = 0;
   }
 
-   FILE* f = fopen("/accel-sim/accel-sim-framework/mpool.txt", "r");
+   FILE* f = fopen("/accel-sim/accel-sim-framework/mpool/mpool.txt", "r");
 
     unsigned long long t;
     unsigned long long a;
@@ -138,7 +138,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 	}
     }
 
-        //FILE *p = fopen("count1.txt", "a");
+        //FILE *p = fopen("test.txt", "a");
         //fprintf(p, "ID: %u Number: %u\n", m_id, g_prefetch_mem_table.size());
         //fclose(p);
 
@@ -376,17 +376,12 @@ void memory_partition_unit::dram_cycle() {
 	 const new_addr_type la = mf_return->get_addr();   
 	 pf_mark_arrived(la);
 
-	 //FILE *f = fopen("count1.txt", "a");
-	 //fprintf(f, "[Prefetch Arrive]0x%llx\n", la);
-	 //fclose(f);
+	 FILE *p = fopen("precord.txt", "a");
+         fprintf(p, "S 0x%llx %u %llu\n", la, m_id, (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle));
+         fclose(p);
 
 	 auto it = m_sram_unready.find(la);
 	 if (it != m_sram_unready.end()) {
-
-	 //FILE *f = fopen("count1.txt", "a");
-         //fprintf(f, "[Unready Match]0x%llx\n", la);
-         //fclose(f);
-
 
 	   mem_fetch* w = it->second;
 
@@ -402,7 +397,7 @@ void memory_partition_unit::dram_cycle() {
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         	MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n",
               	w, dest_spid);
-		FILE *f = fopen("count.txt", "a");
+		FILE *f = fopen("d_latency.txt", "a");
                 fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - w->dram_entry_time);
                 fclose(f);
 
@@ -456,7 +451,7 @@ void memory_partition_unit::dram_cycle() {
 			m_sub_partition[pf_dest_spid]->dram_L2_queue_push(mf);
 			mf->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 			MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n", mf, pf_dest_spid);
-			FILE *f = fopen("count.txt", "a");
+			FILE *f = fopen("d_latency.txt", "a");
                         fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf->dram_entry_time);
                         fclose(f);
 			m_sram_ready.pop_front();
@@ -505,7 +500,7 @@ void memory_partition_unit::dram_cycle() {
         MEMPART_DPRINTF(
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
-	FILE *f = fopen("count.txt", "a");
+	FILE *f = fopen("d_latency.txt", "a");
         fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf_return->dram_entry_time);
         fclose(f);
 	int b = bank_id_from_mf(mf_return);
@@ -534,7 +529,7 @@ void memory_partition_unit::dram_cycle() {
 			    m_sub_partition[pf_dest_spid]->dram_L2_queue_push(mf);
 			    mf->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 			    MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n", mf, pf_dest_spid);
-			    FILE *f = fopen("count.txt", "a");
+			    FILE *f = fopen("d_latency.txt", "a");
 			    fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf->dram_entry_time);
 			    fclose(f);
 			    m_sram_ready.pop_front();
@@ -554,7 +549,7 @@ void memory_partition_unit::dram_cycle() {
 		    m_sub_partition[pf_dest_spid]->dram_L2_queue_push(mf);
 		    mf->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 		    MEMPART_DPRINTF("mem_fetch request %p return from dram to sub partition %d\n", mf, pf_dest_spid);
-		    FILE *f = fopen("count.txt", "a");
+		    FILE *f = fopen("d_latency.txt", "a");
 		    fprintf(f, "%llu\n", m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle - mf->dram_entry_time);
 		    fclose(f);
 		    m_sram_ready.pop_front();
@@ -611,8 +606,8 @@ void memory_partition_unit::dram_cycle() {
 
       if (!mf->is_write() && pf_exists(la)) {
 
-	 FILE *p = fopen("count1.txt", "a");
-         fprintf(p, "Prefetch Hit\n");
+	 FILE *p = fopen("precord.txt", "a");
+	 fprintf(p, "M 0x%llx %u %llu\n", la, m_id, (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle));
          fclose(p);
 
          if (pf_is_arrived(la)) {
@@ -1246,7 +1241,7 @@ mem_fetch* memory_partition_unit::generate_prefetch_after_issue() {
 
     pf_track_request(pf_addr);
 
-    //FILE *p = fopen("count1.txt", "a");
+    //FILE *p = fopen("test.txt", "a");
     //fprintf(p, "Prefetch: ID: %u Pool Rest: %u\n", m_id, mpool.size());
     //fclose(p);
 
@@ -1507,8 +1502,8 @@ void memory_partition_unit::make_prefetch_from_template(mem_fetch* original) {
                                   original->get_original_mf(),
                                   original->get_original_wr_mf());
 
-    FILE *f = fopen("count1.txt", "a");
-    fprintf(f, "Template Success\n");
-    fclose(f);
+    //FILE *f = fopen("test.txt", "a");
+    //fprintf(f, "Template Success\n");
+    //fclose(f);
 
 }

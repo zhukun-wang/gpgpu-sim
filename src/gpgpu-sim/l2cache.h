@@ -264,6 +264,8 @@ inline void pf_mark_arrived(new_addr_type addr) {
     mrecord.push_back(addr);
   }
 
+  unsigned sram_max = 0;
+
  private:
   unsigned m_id;
   const memory_config *m_config;
