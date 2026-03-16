@@ -120,15 +120,18 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
    FILE* f = fopen("/accel-sim/accel-sim-framework/mpool/mpool.txt", "r");
 
-    unsigned long long t;
+    unsigned long long n;
     unsigned long long a;
     unsigned long long b;
 
-    while (fscanf(f, "%llu %llx %llx", &t, &b, &a) == 3) {
+    //while (fscanf(f, "%llu %llx %llx", &t, &b, &a) == 3) {
+    //while (fscanf(f, "%llx %llx %llu", &b, &a, &n) == 3) {
+    while (fscanf(f, "%llx %llx", &b, &a) == 2) {
         PrefetchMemEntry entry;
         //entry.time = t;
         entry.base = (uint64_t)b;
 	entry.addr = (uint64_t)a;
+	//entry.num = n;
 
 	addrdec_t tlx;
 	m_config->m_address_mapping.addrdec_tlx(a, &tlx);
@@ -652,7 +655,7 @@ void memory_partition_unit::dram_cycle() {
 
   if (!issued) {
 
-    if (!m_dram->full(false)) {
+    if (!m_dram->full(false) & (m_prefetch_table.size() < m_pf_capacity)) {
 
 	mem_fetch* pf = generate_prefetch_after_issue();
 
@@ -1251,21 +1254,14 @@ mem_fetch* memory_partition_unit::generate_prefetch_after_issue() {
 }
 
 void memory_partition_unit::active_mpool() {
-
     auto &rec = mrecord;
-
     for (auto rec_it = rec.begin(); rec_it != rec.end(); ) {
-
         new_addr_type b = *rec_it;
-
         for (auto it = g_prefetch_mem_table.begin();
              it != g_prefetch_mem_table.end(); ) {
-
             if (it->base == b) {
-
-		addrdec_t tlx;
+                addrdec_t tlx;
                 m_config->m_address_mapping.addrdec_tlx(it->addr, &tlx);
-
                 int bk;
                 switch (m_config->dram_bnk_indexing_policy) {
                     case LINEAR_BK_INDEX:
@@ -1287,18 +1283,53 @@ void memory_partition_unit::active_mpool() {
                         bk = 0;
                         break;
                 }
-
                 PoolCand cand;
                 cand.addr = it->addr;
                 cand.bank = bk;
                 cand.row = tlx.row;
+                cand.label = 4;
+                cand.time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
                 mpool.push_back(cand);
-
                 it = g_prefetch_mem_table.erase(it);
             } else {
                 ++it;
             }
         }
+
+        bool skip_label = false;
+        for (const auto &cand : mpool) {
+            if (cand.addr == b && cand.label == 1) {
+                skip_label = true;
+                break;
+            }
+        }
+
+        if (!skip_label) {
+            for (auto &cand : mpool) {
+                new_addr_type offset = cand.addr - b;
+                if (offset == 1 * STEP_SMALL ||
+                    offset == 2 * STEP_SMALL ||
+                    offset == 3 * STEP_SMALL) {
+                    cand.label = 1;
+                }
+                else if (offset == STEP_BIG + 1 * STEP_SMALL ||
+                         offset == STEP_BIG + 2 * STEP_SMALL ||
+                         offset == STEP_BIG + 3 * STEP_SMALL) {
+                    cand.label = 2;
+                }
+                else if (offset == 4 * STEP_SMALL ||
+                         offset == 5 * STEP_SMALL ||
+                         offset == 6 * STEP_SMALL ||
+                         offset == 7 * STEP_SMALL ||
+                         offset == STEP_BIG + 4 * STEP_SMALL ||
+                         offset == STEP_BIG + 5 * STEP_SMALL ||
+                         offset == STEP_BIG + 6 * STEP_SMALL ||
+                         offset == STEP_BIG + 7 * STEP_SMALL) {
+                    cand.label = 3;
+                }
+            }
+        }
+
         rec_it = rec.erase(rec_it);
     }
 }
@@ -1358,7 +1389,6 @@ void memory_partition_unit::rlb_insert(new_addr_type line) {
 
 new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 {
-
     if (mpool.empty())
         return 0;
 
@@ -1368,60 +1398,47 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
         return mp.find(row) != mp.end();
     };
 
-    for (const auto &c : mpool) {
-        if ((unsigned)c.bank < m_bank_inflight.size() && m_bank_inflight[c.bank] == 0) {
-            return c.addr;
-        }
-    }
+    auto is_better = [](const PoolCand &c, const PoolCand *best) -> bool {
+        if (!best) return true;
+        if (c.label < best->label) return true;
+        if (c.label == best->label && c.time < best->time) return true;
+        return false;
+    };
 
-    for (const auto &c : mpool) {
-        if ((unsigned)c.bank < m_bank_inflight.size()
-            && m_bank_inflight[c.bank] < 4
-            && has_pending_row(c.bank, c.row)) {
-            return c.addr;
-        }
-    }
-
-    int bank_count = m_bank_inflight.size();
-
-    int sorted_ids[16];  
-
-    for (int i = 0; i < bank_count; ++i) {
-        sorted_ids[i] = i;
-    }
-
-    for (int i = 0; i < bank_count - 1; ++i) {
-        int min_idx = i;
-        for (int j = i + 1; j < bank_count; ++j) {
-            if (m_bank_inflight[sorted_ids[j]] <
-                m_bank_inflight[sorted_ids[min_idx]]) {
-                min_idx = j;
+    {
+        PoolCand *best = nullptr;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size() && m_bank_inflight[c.bank] == 0) {
+                if (is_better(c, best))
+                    best = &c;
             }
         }
-
-        if (min_idx != i) {
-            int tmp = sorted_ids[i];
-            sorted_ids[i] = sorted_ids[min_idx];
-            sorted_ids[min_idx] = tmp;
-        }
+        if (best) return best->addr;
     }
-
-    for (int i = 0; i < bank_count; ++i) {
-  
-        int bk = sorted_ids[i];
-
-        if (m_bank_inflight[bk] > 6)
-            break;
-
-        for (const auto &c : mpool) {
-            if ((unsigned)c.bank == (unsigned)bk) {
-                return c.addr;
+    {
+        PoolCand *best = nullptr;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size()
+                && m_bank_inflight[c.bank] < 4
+                && has_pending_row(c.bank, c.row)) {
+                if (is_better(c, best))
+                    best = &c;
             }
         }
+        if (best) return best->addr;
     }
-
+    {
+        PoolCand *best = nullptr;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size()
+                && m_bank_inflight[c.bank] < 4) {
+                if (is_better(c, best))
+                    best = &c;
+            }
+        }
+        if (best) return best->addr;
+    }
     return 0;
-
 }
 
 new_addr_type memory_partition_unit::align_active_base(new_addr_type addr)

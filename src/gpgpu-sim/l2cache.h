@@ -128,7 +128,7 @@ class memory_partition_unit {
   };
   std::unordered_map<new_addr_type, PrefetchEntry> m_prefetch_table;
 
-  size_t m_pf_capacity = 1000000;
+  size_t m_pf_capacity = 1024;
 
   unsigned long long now();
 
@@ -141,6 +141,16 @@ class memory_partition_unit {
     it->second.ts = now();
     it->second.state = PF_PENDING; 
     return;
+  }
+
+  unsigned long long cur = now();
+  for (auto tit = m_prefetch_table.begin(); tit != m_prefetch_table.end(); ) {
+    if (cur - tit->second.ts > 2000) {
+      m_pf_lru.erase(tit->second.it);
+      tit = m_prefetch_table.erase(tit);
+    } else {
+      ++tit;
+    }
   }
 
   if (m_prefetch_table.size() >= m_pf_capacity && !m_pf_lru.empty()) {
@@ -240,7 +250,7 @@ inline void pf_mark_arrived(new_addr_type addr) {
     //unsigned long long time;
     uint64_t base;
     uint64_t addr;
-    //unsigned long long chip;
+    //unsigned long long num;
   };
 
   std::vector<PrefetchMemEntry> g_prefetch_mem_table;
@@ -249,7 +259,12 @@ inline void pf_mark_arrived(new_addr_type addr) {
     new_addr_type addr;
     int bank;
     unsigned row;
+    unsigned time;
+    unsigned label;
   };
+
+  new_addr_type STEP_SMALL = 0x20;
+  new_addr_type STEP_BIG   = 0x2000;
 
   std::vector<PoolCand> mpool;
 
