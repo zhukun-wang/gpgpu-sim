@@ -133,15 +133,25 @@ class memory_partition_unit {
   unsigned long long now();
 
   inline void pf_cleanup_expired() {
-  unsigned long long cur = now();
-  for (auto tit = m_prefetch_table.begin(); tit != m_prefetch_table.end(); ) {
-    if (cur - tit->second.ts > 2000) {
-      m_pf_lru.erase(tit->second.it);
-      tit = m_prefetch_table.erase(tit);
-    } else {
-      ++tit;
+    if (m_prefetch_table.size() < m_pf_capacity)
+        return;
+
+    unsigned long long cur = now();
+    auto oldest = m_prefetch_table.end();
+    unsigned long long max_age = 2000;
+
+    for (auto tit = m_prefetch_table.begin(); tit != m_prefetch_table.end(); ++tit) {
+        unsigned long long age = cur - tit->second.ts;
+        if (age > max_age) {
+            max_age = age;
+            oldest = tit;
+        }
     }
-  }
+
+    if (oldest != m_prefetch_table.end()) {
+        m_pf_lru.erase(oldest->second.it);
+        m_prefetch_table.erase(oldest);
+    }
   }
 
   inline void pf_track_request(new_addr_type addr) {

@@ -1387,7 +1387,7 @@ void memory_partition_unit::rlb_insert(new_addr_type line) {
     m_recent_lines[m_rlb_head].valid = true;
     m_rlb_head = (m_rlb_head + 1) % RLB_SIZE;
 }
-
+/*
 new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 {
     if (mpool.empty())
@@ -1441,6 +1441,53 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
     }
     return 0;
 }
+*/
+
+//Stide Based
+
+new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
+{
+    if (mpool.empty())
+        return 0;
+
+    PoolCand *best = nullptr;
+    for (PoolCand &c : mpool) {
+        if ((unsigned)c.bank < m_bank_inflight.size()
+            && m_bank_inflight[c.bank] < 8) {
+            if (!best || c.time < best->time)
+                best = &c;
+        }
+    }
+    return best ? best->addr : 0;
+}
+
+
+//BLP
+/*
+new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
+{
+    if (mpool.empty())
+        return 0;
+
+    {
+        PoolCand *best = nullptr;
+        unsigned min_inflight = 8;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size()
+                && m_bank_inflight[c.bank] < 8) {
+                if (m_bank_inflight[c.bank] < min_inflight
+                    || (m_bank_inflight[c.bank] == min_inflight && best && c.time < best->time)) {
+                    min_inflight = m_bank_inflight[c.bank];
+                    best = &c;
+                }
+            }
+        }
+        if (best) return best->addr;
+    }
+
+    return 0;
+}
+*/
 
 new_addr_type memory_partition_unit::align_active_base(new_addr_type addr)
 {
