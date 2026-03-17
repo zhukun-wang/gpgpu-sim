@@ -1399,46 +1399,50 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
         return mp.find(row) != mp.end();
     };
 
-    auto is_better = [](const PoolCand &c, const PoolCand *best) -> bool {
-        if (!best) return true;
-        if (c.label < best->label) return true;
-        if (c.label == best->label && c.time < best->time) return true;
-        return false;
-    };
+    std::set<int> labels;
+    for (const PoolCand &c : mpool)
+        labels.insert(c.label);
 
-    {
-        PoolCand *best = nullptr;
-        for (PoolCand &c : mpool) {
-            if ((unsigned)c.bank < m_bank_inflight.size() && m_bank_inflight[c.bank] == 0) {
-                if (is_better(c, best))
-                    best = &c;
+    for (int lbl : labels) {
+        {
+            PoolCand *best = nullptr;
+            for (PoolCand &c : mpool) {
+                if (c.label != lbl) continue;
+                if ((unsigned)c.bank < m_bank_inflight.size()
+                    && m_bank_inflight[c.bank] == 0) {
+                    if (!best || c.time < best->time)
+                        best = &c;
+                }
             }
+            if (best) return best->addr;
         }
-        if (best) return best->addr;
-    }
-    {
-        PoolCand *best = nullptr;
-        for (PoolCand &c : mpool) {
-            if ((unsigned)c.bank < m_bank_inflight.size()
-                && m_bank_inflight[c.bank] < 4
-                && has_pending_row(c.bank, c.row)) {
-                if (is_better(c, best))
-                    best = &c;
+        {
+            PoolCand *best = nullptr;
+            for (PoolCand &c : mpool) {
+                if (c.label != lbl) continue;
+                if ((unsigned)c.bank < m_bank_inflight.size()
+                    && m_bank_inflight[c.bank] < 4
+                    && has_pending_row(c.bank, c.row)) {
+                    if (!best || c.time < best->time)
+                        best = &c;
+                }
             }
+            if (best) return best->addr;
         }
-        if (best) return best->addr;
-    }
-    {
-        PoolCand *best = nullptr;
-        for (PoolCand &c : mpool) {
-            if ((unsigned)c.bank < m_bank_inflight.size()
-                && m_bank_inflight[c.bank] < 4) {
-                if (is_better(c, best))
-                    best = &c;
+        {
+            PoolCand *best = nullptr;
+            for (PoolCand &c : mpool) {
+                if (c.label != lbl) continue;
+                if ((unsigned)c.bank < m_bank_inflight.size()
+                    && m_bank_inflight[c.bank] < 4) {
+                    if (!best || c.time < best->time)
+                        best = &c;
+                }
             }
+            if (best) return best->addr;
         }
-        if (best) return best->addr;
     }
+
     return 0;
 }
 */
