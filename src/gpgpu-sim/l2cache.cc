@@ -606,6 +606,7 @@ void memory_partition_unit::dram_cycle() {
       }
 
       update_active_base_table(la);
+      pf_cleanup_expired();
 
       if (!mf->is_write() && pf_exists(la)) {
 

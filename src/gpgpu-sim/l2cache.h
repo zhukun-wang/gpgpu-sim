@@ -128,9 +128,21 @@ class memory_partition_unit {
   };
   std::unordered_map<new_addr_type, PrefetchEntry> m_prefetch_table;
 
-  size_t m_pf_capacity = 1024;
+  size_t m_pf_capacity = 512;
 
   unsigned long long now();
+
+  inline void pf_cleanup_expired() {
+  unsigned long long cur = now();
+  for (auto tit = m_prefetch_table.begin(); tit != m_prefetch_table.end(); ) {
+    if (cur - tit->second.ts > 2000) {
+      m_pf_lru.erase(tit->second.it);
+      tit = m_prefetch_table.erase(tit);
+    } else {
+      ++tit;
+    }
+  }
+  }
 
   inline void pf_track_request(new_addr_type addr) {
   auto it = m_prefetch_table.find(addr);
@@ -141,16 +153,6 @@ class memory_partition_unit {
     it->second.ts = now();
     it->second.state = PF_PENDING; 
     return;
-  }
-
-  unsigned long long cur = now();
-  for (auto tit = m_prefetch_table.begin(); tit != m_prefetch_table.end(); ) {
-    if (cur - tit->second.ts > 2000) {
-      m_pf_lru.erase(tit->second.it);
-      tit = m_prefetch_table.erase(tit);
-    } else {
-      ++tit;
-    }
   }
 
   if (m_prefetch_table.size() >= m_pf_capacity && !m_pf_lru.empty()) {
