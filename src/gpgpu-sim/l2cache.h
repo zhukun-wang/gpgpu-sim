@@ -262,7 +262,7 @@ inline void pf_mark_arrived(new_addr_type addr) {
     //unsigned long long time;
     uint64_t base;
     uint64_t addr;
-    //unsigned long long num;
+    unsigned long long num;
   };
 
   std::vector<PrefetchMemEntry> g_prefetch_mem_table;
@@ -272,13 +272,21 @@ inline void pf_mark_arrived(new_addr_type addr) {
     int bank;
     unsigned row;
     unsigned time;
-    unsigned label;
+    unsigned group;
   };
 
   new_addr_type STEP_SMALL = 0x20;
   new_addr_type STEP_BIG   = 0x2000;
 
   std::vector<PoolCand> mpool;
+
+  struct PreGroup {
+    unsigned group;
+    unsigned count;
+  };
+
+  std::vector<PreGroup> glist;
+
 
   mem_fetch* m_prefetch_template = nullptr;
   void make_prefetch_from_template(mem_fetch* original);

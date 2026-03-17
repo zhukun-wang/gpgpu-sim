@@ -125,13 +125,12 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
     unsigned long long b;
 
     //while (fscanf(f, "%llu %llx %llx", &t, &b, &a) == 3) {
-    //while (fscanf(f, "%llx %llx %llu", &b, &a, &n) == 3) {
-    while (fscanf(f, "%llx %llx", &b, &a) == 2) {
+    while (fscanf(f, "%llx %llx %llu", &b, &a, &n) == 3) {
         PrefetchMemEntry entry;
         //entry.time = t;
         entry.base = (uint64_t)b;
 	entry.addr = (uint64_t)a;
-	//entry.num = n;
+	entry.num = n;
 
 	addrdec_t tlx;
 	m_config->m_address_mapping.addrdec_tlx(a, &tlx);
@@ -139,6 +138,17 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
         if (tlx.chip == m_id) {
           g_prefetch_mem_table.push_back(entry);
 	}
+
+        bool found = false;
+        for (auto &g : glist) {
+            if (g.group == (unsigned)n) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            glist.push_back({(unsigned)n, 64});
+        }
     }
 
         //FILE *p = fopen("test.txt", "a");
@@ -1288,49 +1298,23 @@ void memory_partition_unit::active_mpool() {
                 cand.addr = it->addr;
                 cand.bank = bk;
                 cand.row = tlx.row;
-                cand.label = 4;
                 cand.time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+		cand.group = it->num;
                 mpool.push_back(cand);
+
+                unsigned matched_num = it->num;
+                for (auto &g : glist) {
+                    if (g.group == matched_num) {
+                        g.count--;
+                        break;  
+                    }
+                }
+
                 it = g_prefetch_mem_table.erase(it);
             } else {
                 ++it;
             }
         }
-
-        bool skip_label = false;
-        for (const auto &cand : mpool) {
-            if (cand.addr == b && cand.label == 1) {
-                skip_label = true;
-                break;
-            }
-        }
-
-        if (!skip_label) {
-            for (auto &cand : mpool) {
-                new_addr_type offset = cand.addr - b;
-                if (offset == 1 * STEP_SMALL ||
-                    offset == 2 * STEP_SMALL ||
-                    offset == 3 * STEP_SMALL) {
-                    cand.label = 1;
-                }
-                else if (offset == STEP_BIG + 1 * STEP_SMALL ||
-                         offset == STEP_BIG + 2 * STEP_SMALL ||
-                         offset == STEP_BIG + 3 * STEP_SMALL) {
-                    cand.label = 2;
-                }
-                else if (offset == 4 * STEP_SMALL ||
-                         offset == 5 * STEP_SMALL ||
-                         offset == 6 * STEP_SMALL ||
-                         offset == 7 * STEP_SMALL ||
-                         offset == STEP_BIG + 4 * STEP_SMALL ||
-                         offset == STEP_BIG + 5 * STEP_SMALL ||
-                         offset == STEP_BIG + 6 * STEP_SMALL ||
-                         offset == STEP_BIG + 7 * STEP_SMALL) {
-                    cand.label = 3;
-                }
-            }
-        }
-
         rec_it = rec.erase(rec_it);
     }
 }
@@ -1387,67 +1371,6 @@ void memory_partition_unit::rlb_insert(new_addr_type line) {
     m_recent_lines[m_rlb_head].valid = true;
     m_rlb_head = (m_rlb_head + 1) % RLB_SIZE;
 }
-/*
-new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
-{
-    if (mpool.empty())
-        return 0;
-
-    auto has_pending_row = [&](int bk, unsigned row) -> bool {
-        if ((unsigned)bk >= m_bank_row_pending.size()) return false;
-        const auto &mp = m_bank_row_pending[bk];
-        return mp.find(row) != mp.end();
-    };
-
-    std::set<int> labels;
-    for (const PoolCand &c : mpool)
-        labels.insert(c.label);
-
-    for (int lbl : labels) {
-        {
-            PoolCand *best = nullptr;
-            for (PoolCand &c : mpool) {
-                if (c.label != lbl) continue;
-                if ((unsigned)c.bank < m_bank_inflight.size()
-                    && m_bank_inflight[c.bank] == 0) {
-                    if (!best || c.time < best->time)
-                        best = &c;
-                }
-            }
-            if (best) return best->addr;
-        }
-        {
-            PoolCand *best = nullptr;
-            for (PoolCand &c : mpool) {
-                if (c.label != lbl) continue;
-                if ((unsigned)c.bank < m_bank_inflight.size()
-                    && m_bank_inflight[c.bank] < 4
-                    && has_pending_row(c.bank, c.row)) {
-                    if (!best || c.time < best->time)
-                        best = &c;
-                }
-            }
-            if (best) return best->addr;
-        }
-        {
-            PoolCand *best = nullptr;
-            for (PoolCand &c : mpool) {
-                if (c.label != lbl) continue;
-                if ((unsigned)c.bank < m_bank_inflight.size()
-                    && m_bank_inflight[c.bank] < 4) {
-                    if (!best || c.time < best->time)
-                        best = &c;
-                }
-            }
-            if (best) return best->addr;
-        }
-    }
-
-    return 0;
-}
-*/
-
-//Stide Based
 
 new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 {
@@ -1455,43 +1378,30 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
         return 0;
 
     PoolCand *best = nullptr;
+    int best_count = -1;
+
     for (PoolCand &c : mpool) {
         if ((unsigned)c.bank < m_bank_inflight.size()
             && m_bank_inflight[c.bank] < 8) {
-            if (!best || c.time < best->time)
+
+            int grp_count = 0;
+            for (auto &g : glist) {
+                if (g.group == c.group) {
+                    grp_count = g.count;
+                    break;
+                }
+            }
+
+            if (!best
+                || grp_count > best_count
+                || (grp_count == best_count && c.time < best->time)) {
                 best = &c;
+                best_count = grp_count;
+            }
         }
     }
     return best ? best->addr : 0;
 }
-
-
-//BLP
-/*
-new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
-{
-    if (mpool.empty())
-        return 0;
-
-    {
-        PoolCand *best = nullptr;
-        unsigned min_inflight = 8;
-        for (PoolCand &c : mpool) {
-            if ((unsigned)c.bank < m_bank_inflight.size()
-                && m_bank_inflight[c.bank] < 8) {
-                if (m_bank_inflight[c.bank] < min_inflight
-                    || (m_bank_inflight[c.bank] == min_inflight && best && c.time < best->time)) {
-                    min_inflight = m_bank_inflight[c.bank];
-                    best = &c;
-                }
-            }
-        }
-        if (best) return best->addr;
-    }
-
-    return 0;
-}
-*/
 
 new_addr_type memory_partition_unit::align_active_base(new_addr_type addr)
 {
