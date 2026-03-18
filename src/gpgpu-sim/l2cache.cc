@@ -1313,7 +1313,8 @@ void memory_partition_unit::active_mpool() {
                     offset == 3 * STEP_SMALL) {
                     cand.label = 1;
                 }
-                else if (offset == STEP_BIG + 1 * STEP_SMALL ||
+                else if (offset == STEP_BIG ||
+			 offset == STEP_BIG + 1 * STEP_SMALL ||
                          offset == STEP_BIG + 2 * STEP_SMALL ||
                          offset == STEP_BIG + 3 * STEP_SMALL) {
                     cand.label = 2;
@@ -1387,7 +1388,7 @@ void memory_partition_unit::rlb_insert(new_addr_type line) {
     m_recent_lines[m_rlb_head].valid = true;
     m_rlb_head = (m_rlb_head + 1) % RLB_SIZE;
 }
-/*
+
 new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 {
     if (mpool.empty())
@@ -1445,10 +1446,9 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 
     return 0;
 }
-*/
 
 //Stide Based
-
+/*
 new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
 {
     if (mpool.empty())
@@ -1464,8 +1464,7 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
     }
     return best ? best->addr : 0;
 }
-
-
+*/
 //BLP
 /*
 new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
