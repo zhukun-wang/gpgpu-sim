@@ -405,6 +405,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "stride (default=1)",
                          "1");
   option_parser_register(
+      opp, "-gpgpu_l1_stride_prefetch_max_outstanding", OPT_UINT32,
+      &gpgpu_l1_stride_prefetch_max_outstanding,
+      "hard budget on prefetch requests alive per core; caps host memory used "
+      "by in-flight prefetches (default=64)",
+      "64");
+  option_parser_register(
       opp, "-n_regfile_gating_group", OPT_UINT32, &n_regfile_gating_group,
       "group of lanes that should be read/written together)", "4");
   option_parser_register(

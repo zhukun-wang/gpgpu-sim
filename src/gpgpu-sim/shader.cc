@@ -2137,14 +2137,19 @@ void ldst_unit::L1_latency_queue_cycle() {
         // Best-effort prefetch: never block the bank, never write back.
         if (status == HIT) {
           l1_latency_queue[j][0] = NULL;
+          assert(m_n_outstanding_pref > 0);
+          m_n_outstanding_pref--;
           delete mf_next;  // line already present, drop the prefetch
         } else if (status == RESERVATION_FAIL) {
           l1_latency_queue[j][0] = NULL;  // no resources now, drop (no retry)
+          assert(m_n_outstanding_pref > 0);
+          m_n_outstanding_pref--;
           delete mf_next;
         } else {
           assert(status == MISS || status == HIT_RESERVED);
           // Request issued/merged; the line will be filled. The returning
-          // mem_fetch is discarded in writeback() without a register write.
+          // mem_fetch is discarded in writeback() without a register write,
+          // where m_n_outstanding_pref is decremented.
           l1_latency_queue[j][0] = NULL;
         }
       } else if (status == HIT) {
@@ -2286,6 +2291,13 @@ void ldst_unit::stride_prefetch(const warp_inst_t &inst, new_addr_type addr) {
 
 void ldst_unit::inject_l1_prefetch(const warp_inst_t &inst,
                                    new_addr_type pf_addr) {
+  // Hard budget: cap the number of prefetch mem_fetch objects alive at once.
+  // Prefetches have no warp/scoreboard back-pressure, so without this they
+  // flood the memory-hierarchy queues and exhaust host RAM (each mem_fetch
+  // carries a warp_inst_t by value). Dropping over budget is best-effort.
+  if (m_n_outstanding_pref >= m_config->gpgpu_l1_stride_prefetch_max_outstanding)
+    return;
+
   const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
   const new_addr_type line = pf_addr & ~((new_addr_type)line_sz - 1);
 
@@ -2312,6 +2324,7 @@ void ldst_unit::inject_l1_prefetch(const warp_inst_t &inst,
   if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] ==
       NULL) {
     l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+    m_n_outstanding_pref++;  // freed in L1_latency_queue_cycle()/writeback()
     m_stats->gpgpu_n_l1_prefetches++;
   } else {
     delete mf;
@@ -2710,6 +2723,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_stats = stats;
   m_sid = sid;
   m_tpc = tpc;
+  m_n_outstanding_pref = 0;  // live L1 stride-prefetch mem_fetch objects
 #define STRSIZE 1024
   char L1T_name[STRSIZE];
   char L1C_name[STRSIZE];
@@ -2882,11 +2896,18 @@ void ldst_unit::writeback() {
         break;
       case 3:  // global/local
         if (m_next_global) {
-          m_next_wb = m_next_global->get_inst();
-          if (m_next_global->isatomic()) {
-            m_core->decrement_atomic_count(
-                m_next_global->get_wid(),
-                m_next_global->get_access_warp_mask().count());
+          // L1D-bypassed prefetch fill: discard without writeback and release
+          // its budget slot (see m_n_outstanding_pref).
+          if (m_next_global->is_prefetch()) {
+            assert(m_n_outstanding_pref > 0);
+            m_n_outstanding_pref--;
+          } else {
+            m_next_wb = m_next_global->get_inst();
+            if (m_next_global->isatomic()) {
+              m_core->decrement_atomic_count(
+                  m_next_global->get_wid(),
+                  m_next_global->get_access_warp_mask().count());
+            }
           }
           delete m_next_global;
           m_next_global = NULL;
@@ -2897,7 +2918,12 @@ void ldst_unit::writeback() {
         if (m_L1D && m_L1D->access_ready()) {
           mem_fetch *mf = m_L1D->next_access();
           // Prefetch fills carry no instruction: discard without writeback.
-          if (!mf->is_prefetch()) m_next_wb = mf->get_inst();
+          if (mf->is_prefetch()) {
+            assert(m_n_outstanding_pref > 0);
+            m_n_outstanding_pref--;
+          } else {
+            m_next_wb = mf->get_inst();
+          }
           delete mf;
           serviced_client = next_client;
         }

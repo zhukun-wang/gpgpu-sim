@@ -1495,6 +1495,13 @@ class ldst_unit : public pipelined_simd_unit {
   // last dynamic-instruction uid fed to the prefetcher, per warp (fire once);
   // sized to max_warps_per_shader on first use, (unsigned)-1 means "none yet".
   std::vector<unsigned> m_pref_last_uid;
+  // Number of L1 stride-prefetch mem_fetch objects currently alive in this
+  // ldst_unit (in the latency queue or in flight through the memory hierarchy).
+  // Unlike demand requests, prefetches are not throttled by warp/scoreboard
+  // back-pressure, so without a hard budget they pile up in the bounded-but-
+  // large MSHR/interconnect/L2/DRAM queues. Because every mem_fetch embeds a
+  // warp_inst_t by value, an unbounded in-flight count can exhaust host RAM.
+  unsigned m_n_outstanding_pref;
   // Observe one demand load and, on a confident stride, inject prefetch(es)
   // into free L1 latency-queue slots. Fires at most once per dynamic inst.
   void stride_prefetch(const warp_inst_t &inst, new_addr_type addr);
@@ -1666,6 +1673,9 @@ class shader_core_config : public core_config {
   // simple stride-based, warp-level (per warp,PC) L1 prefetcher baseline
   bool gpgpu_l1_stride_prefetcher;
   unsigned gpgpu_l1_stride_prefetch_degree;
+  // hard budget on prefetches alive per ldst_unit; bounds host memory since
+  // prefetches (unlike demand requests) have no warp/scoreboard back-pressure.
+  unsigned gpgpu_l1_stride_prefetch_max_outstanding;
 
   bool gpgpu_dwf_reg_bankconflict;
 
