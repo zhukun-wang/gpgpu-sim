@@ -644,6 +644,7 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "gpgpu_n_shmem_bkconflict = %d\n", gpgpu_n_shmem_bkconflict);
   fprintf(fout, "gpgpu_n_l1cache_bkconflict = %d\n",
           gpgpu_n_l1cache_bkconflict);
+  fprintf(fout, "gpgpu_n_l1_prefetches = %llu\n", gpgpu_n_l1_prefetches);
 
   fprintf(fout, "gpgpu_n_intrawarp_mshr_merge = %d\n",
           gpgpu_n_intrawarp_mshr_merge);
@@ -2132,7 +2133,21 @@ void ldst_unit::L1_latency_queue_cycle() {
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
 
-      if (status == HIT) {
+      if (mf_next->is_prefetch()) {
+        // Best-effort prefetch: never block the bank, never write back.
+        if (status == HIT) {
+          l1_latency_queue[j][0] = NULL;
+          delete mf_next;  // line already present, drop the prefetch
+        } else if (status == RESERVATION_FAIL) {
+          l1_latency_queue[j][0] = NULL;  // no resources now, drop (no retry)
+          delete mf_next;
+        } else {
+          assert(status == MISS || status == HIT_RESERVED);
+          // Request issued/merged; the line will be filled. The returning
+          // mem_fetch is discarded in writeback() without a register write.
+          l1_latency_queue[j][0] = NULL;
+        }
+      } else if (status == HIT) {
         assert(!read_sent);
         l1_latency_queue[j][0] = NULL;
         if (mf_next->get_inst().is_load()) {
@@ -2212,6 +2227,82 @@ void ldst_unit::L1_latency_queue_cycle() {
   }
 }
 
+// Simple stride-based, warp-level (per warp,PC) L1 prefetcher baseline.
+// Observes one representative line address per dynamic global load and, once a
+// stride has been confirmed, injects degree prefetch requests into free L1
+// latency-queue slots. Prefetch requests carry no instruction and are dropped
+// on return without touching registers (see is_prefetch() handling).
+void ldst_unit::stride_prefetch(const warp_inst_t &inst, new_addr_type addr) {
+  if (!inst.is_load() || !inst.space.is_global()) return;
+  if (m_L1D == NULL || m_config->m_L1D_config.l1_latency == 0) return;
+
+  const unsigned wid = inst.warp_id();
+  const unsigned uid = inst.get_uid();
+  // Fire at most once per dynamic instruction (memory_cycle is re-entered
+  // every cycle while the instruction drains its coalesced accesses).
+  std::unordered_map<unsigned, unsigned>::iterator lu = m_pref_last_uid.find(wid);
+  if (lu != m_pref_last_uid.end() && lu->second == uid) return;
+  m_pref_last_uid[wid] = uid;
+
+  const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
+  const new_addr_type line = addr & ~((new_addr_type)line_sz - 1);
+  const unsigned long long key = ((unsigned long long)wid << 32) |
+                                 (unsigned long long)(unsigned)inst.pc;
+
+  stride_pref_entry &e = m_pref_table[key];
+  if (e.valid) {
+    long long s = (long long)line - (long long)e.last_line;
+    if (s != 0 && s == e.stride) {
+      if (e.conf < 1024) e.conf++;
+    } else {
+      e.stride = s;
+      e.conf = 0;
+    }
+    // Confidence 1 means two consecutive identical strides have been seen.
+    if (e.conf >= 1 && e.stride != 0) {
+      for (unsigned k = 1; k <= m_config->gpgpu_l1_stride_prefetch_degree; k++)
+        inject_l1_prefetch(inst, line + (new_addr_type)(e.stride * (long long)k));
+    }
+  } else {
+    e.valid = true;
+  }
+  e.last_line = line;
+}
+
+void ldst_unit::inject_l1_prefetch(const warp_inst_t &inst,
+                                   new_addr_type pf_addr) {
+  const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
+  const new_addr_type line = pf_addr & ~((new_addr_type)line_sz - 1);
+
+  // Single active lane covering the whole line; reads only.
+  active_mask_t active_mask;
+  active_mask.set(0);
+  mem_access_byte_mask_t byte_mask;
+  for (unsigned i = 0; i < line_sz && i < MAX_MEMORY_ACCESS_SIZE; i++)
+    byte_mask.set(i);
+  mem_access_sector_mask_t sector_mask;
+  sector_mask.set();  // request all sectors of the line
+
+  mem_fetch *mf = m_mf_allocator->alloc(
+      line, GLOBAL_ACC_R, active_mask, byte_mask, sector_mask, line_sz,
+      false /*write*/,
+      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+      inst.warp_id(), m_sid, m_tpc, NULL /*original_mf*/, inst.get_streamID());
+  mf->set_prefetch();
+
+  unsigned bank_id = m_config->m_L1D_config.set_bank(line);
+  assert(bank_id < m_config->m_L1D_config.l1_banks);
+  // Best-effort: only inject if the bank's entry slot is free this cycle,
+  // otherwise drop the prefetch so it never blocks the demand path.
+  if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] ==
+      NULL) {
+    l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+    m_stats->gpgpu_n_l1_prefetches++;
+  } else {
+    delete mf;
+  }
+}
+
 bool ldst_unit::constant_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
                                mem_stage_access_type &fail_type) {
   if (inst.empty() || ((inst.space.get_type() != const_space) &&
@@ -2269,6 +2360,9 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
 
   mem_stage_stall_type stall_cond = NO_RC_FAIL;
   const mem_access_t &access = inst.accessq_back();
+  // Capture a representative line address for the stride prefetcher before the
+  // demand accesses are popped below.
+  new_addr_type pref_rep_addr = access.get_addr();
 
   bool bypassL1D = false;
   if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
@@ -2312,6 +2406,8 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
   } else {
     assert(CACHE_UNDEFINED != inst.cache_op);
     stall_cond = process_memory_access_queue_l1cache(m_L1D, inst);
+    if (m_config->gpgpu_l1_stride_prefetcher)
+      stride_prefetch(inst, pref_rep_addr);
   }
   if (!inst.accessq_empty() && stall_cond == NO_RC_FAIL)
     stall_cond = COAL_STALL;
@@ -2785,7 +2881,8 @@ void ldst_unit::writeback() {
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
           mem_fetch *mf = m_L1D->next_access();
-          m_next_wb = mf->get_inst();
+          // Prefetch fills carry no instruction: discard without writeback.
+          if (!mf->is_prefetch()) m_next_wb = mf->get_inst();
           delete mf;
           serviced_client = next_client;
         }

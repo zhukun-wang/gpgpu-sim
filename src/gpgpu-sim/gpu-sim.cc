@@ -395,6 +395,16 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_perfect_mem,
                          "enable perfect memory mode (no cache miss)", "0");
   option_parser_register(
+      opp, "-gpgpu_l1_stride_prefetcher", OPT_BOOL, &gpgpu_l1_stride_prefetcher,
+      "enable the simple stride-based warp-level (per warp,PC) L1 prefetcher "
+      "baseline (default=on)",
+      "1");
+  option_parser_register(opp, "-gpgpu_l1_stride_prefetch_degree", OPT_UINT32,
+                         &gpgpu_l1_stride_prefetch_degree,
+                         "number of cache lines to prefetch ahead per detected "
+                         "stride (default=1)",
+                         "1");
+  option_parser_register(
       opp, "-n_regfile_gating_group", OPT_UINT32, &n_regfile_gating_group,
       "group of lanes that should be read/written together)", "4");
   option_parser_register(

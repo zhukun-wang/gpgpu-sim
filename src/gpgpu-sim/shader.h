@@ -43,6 +43,7 @@
 #include <list>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1473,6 +1474,23 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+
+  // --- simple stride-based, warp-level (per warp,PC) L1 prefetcher baseline ---
+  struct stride_pref_entry {
+    new_addr_type last_line;  // last line address seen for this (warp,PC)
+    long long stride;         // last observed stride (in bytes)
+    unsigned conf;            // confidence: matching strides observed in a row
+    bool valid;
+    stride_pref_entry() : last_line(0), stride(0), conf(0), valid(false) {}
+  };
+  // table keyed by (warp_id << 32) | pc
+  std::unordered_map<unsigned long long, stride_pref_entry> m_pref_table;
+  // last dynamic-instruction uid fed to the prefetcher, per warp (fire once)
+  std::unordered_map<unsigned, unsigned> m_pref_last_uid;
+  // Observe one demand load and, on a confident stride, inject prefetch(es)
+  // into free L1 latency-queue slots. Fires at most once per dynamic inst.
+  void stride_prefetch(const warp_inst_t &inst, new_addr_type addr);
+  void inject_l1_prefetch(const warp_inst_t &inst, new_addr_type pf_addr);
 };
 
 enum pipeline_stage_name_t {
@@ -1637,6 +1655,10 @@ class shader_core_config : public core_config {
   mutable cache_config m_L1C_config;
   mutable l1d_cache_config m_L1D_config;
 
+  // simple stride-based, warp-level (per warp,PC) L1 prefetcher baseline
+  bool gpgpu_l1_stride_prefetcher;
+  unsigned gpgpu_l1_stride_prefetch_degree;
+
   bool gpgpu_dwf_reg_bankconflict;
 
   unsigned gpgpu_num_sched_per_core;
@@ -1783,6 +1805,7 @@ struct shader_core_stats_pod {
   unsigned gpgpu_n_param_insn;
   unsigned gpgpu_n_shmem_bkconflict;
   unsigned gpgpu_n_l1cache_bkconflict;
+  unsigned long long gpgpu_n_l1_prefetches;  // L1 stride prefetcher requests
   int gpgpu_n_intrawarp_mshr_merge;
   unsigned gpgpu_n_cmem_portconflict;
   unsigned gpu_stall_shd_mem_breakdown[N_MEM_STAGE_ACCESS_TYPE]

@@ -64,6 +64,7 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   }
 
   m_type = m_access.is_write() ? WRITE_REQUEST : READ_REQUEST;
+  m_is_prefetch = false;
   m_timestamp = cycle;
   m_timestamp2 = 0;
   m_status = MEM_FETCH_INITIALIZED;
