@@ -2244,37 +2244,51 @@ void ldst_unit::l1_stride_prefetch(const warp_inst_t &inst) {
 
 // Inject a single prefetch read into a free L1 latency-queue slot. Never blocks
 // demand traffic: if no slot is free, the prefetch is simply dropped.
-void ldst_unit::inject_l1_prefetch(unsigned wid, new_addr_type pf_addr) {
+void ldst_unit::inject_l1_prefetch(unsigned wid, new_addr_type line_addr) {
   const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
-  new_addr_type block_addr = pf_addr & ~((new_addr_type)(line_sz - 1));
+  // A cache access must be at most one "atom" (a sector for sector caches, the
+  // whole line otherwise). Issue one request per atom to cover the target line.
+  const unsigned atom_sz = m_config->m_L1D_config.get_atom_sz();
+  line_addr &= ~((new_addr_type)(line_sz - 1));
 
-  unsigned bank_id = m_config->m_L1D_config.set_bank(block_addr);
-  assert(bank_id < m_config->m_L1D_config.l1_banks);
-  // Only inject if the back of the bank's pipeline is free (do not displace or
-  // stall demand requests).
-  if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] != NULL) {
-    m_stats->pf_dropped_noslot++;
-    return;
+  const unsigned long long cycle =
+      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+
+  bool any_placed = false;
+  for (unsigned off = 0; off < line_sz; off += atom_sz) {
+    new_addr_type atom_addr = line_addr + off;
+    unsigned bank_id = m_config->m_L1D_config.set_bank(atom_addr);
+    assert(bank_id < m_config->m_L1D_config.l1_banks);
+    // Only inject if the back of the bank's pipeline is free (do not displace
+    // or stall demand requests). Bank busy -> skip this atom.
+    if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] != NULL)
+      continue;
+
+    active_mask_t amask;
+    amask.set(0);
+    mem_access_sector_mask_t smask;
+    smask.set((off / SECTOR_SIZE) % SECTOR_CHUNCK_SIZE);  // this atom's sector
+    mem_access_byte_mask_t bmask;
+    for (unsigned b = 0; b < atom_sz && (off + b) < MAX_MEMORY_ACCESS_SIZE; b++)
+      bmask.set(off + b);
+
+    mem_fetch *mf = m_mf_allocator->alloc(
+        atom_addr, GLOBAL_ACC_R, amask, bmask, smask, atom_sz, false, cycle, wid,
+        m_sid, m_tpc, NULL, (unsigned long long)-1);
+    mf->set_prefetch();
+    l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+    any_placed = true;
   }
 
-  active_mask_t amask;
-  amask.set(0);
-  mem_access_byte_mask_t bmask;
-  bmask.set();  // whole line
-  mem_access_sector_mask_t smask;
-  smask.set();  // all sectors
-
-  mem_fetch *mf = m_mf_allocator->alloc(
-      block_addr, GLOBAL_ACC_R, amask, bmask, smask, line_sz, false,
-      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
-      wid, m_sid, m_tpc, NULL, (unsigned long long)-1);
-  mf->set_prefetch();
-  l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
-
-  // Record the prefetched block so a later demand reuse counts as "useful".
-  unsigned tidx = (unsigned)((block_addr ^ (block_addr >> 17)) % PF_TRACK_SIZE);
-  m_pf_track[tidx] = block_addr;
-  m_stats->pf_issued++;
+  // Count one logical prefetch per line (so accuracy/coverage stay line-granular
+  // and comparable to the demand miss counts).
+  if (any_placed) {
+    unsigned tidx = (unsigned)((line_addr ^ (line_addr >> 17)) % PF_TRACK_SIZE);
+    m_pf_track[tidx] = line_addr;
+    m_stats->pf_issued++;
+  } else {
+    m_stats->pf_dropped_noslot++;
+  }
 }
 
 // Account a (non-prefetch) demand access at the L1 and detect useful
