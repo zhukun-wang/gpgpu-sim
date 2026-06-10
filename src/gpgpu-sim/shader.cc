@@ -743,6 +743,69 @@ void shader_core_stats::print(FILE *fout) const {
   m_incoming_traffic_stats->print(fout);
 }
 
+void shader_core_stats::print_prefetch_monitor(const char *path) const {
+  FILE *fp = fopen(path, "w");
+  if (!fp) return;
+
+  unsigned long long issued = pf_issued;
+  unsigned long long useful = pf_useful;
+  unsigned long long total_issued = issued + pf_dropped_noslot + pf_dropped_mshr;
+  // Misses that would have occurred without prefetching ~= the misses still seen
+  // plus the demand misses the prefetcher turned into hits (the timely ones).
+  unsigned long long baseline_misses = pf_demand_miss + pf_useful_timely;
+
+  double accuracy = issued ? (100.0 * (double)useful / (double)issued) : 0.0;
+  double coverage =
+      baseline_misses ? (100.0 * (double)useful / (double)baseline_misses) : 0.0;
+  double timeliness =
+      useful ? (100.0 * (double)pf_useful_timely / (double)useful) : 0.0;
+  double issue_rate =
+      total_issued ? (100.0 * (double)issued / (double)total_issued) : 0.0;
+
+  fprintf(fp, "===== L1 stride prefetcher monitor =====\n");
+  fprintf(fp, "(simple warp-level, per-(warp,pc) stride; always-on baseline)\n\n");
+
+  fprintf(fp, "-- raw counters (summed over all SM cores) --\n");
+  fprintf(fp, "prefetches_issued            = %llu\n", issued);
+  fprintf(fp, "prefetches_dropped_no_slot   = %llu\n", pf_dropped_noslot);
+  fprintf(fp, "prefetches_dropped_mshr_full = %llu\n", pf_dropped_mshr);
+  fprintf(fp, "useful_prefetches            = %llu\n", useful);
+  fprintf(fp, "  useful_timely (full hide)  = %llu\n", pf_useful_timely);
+  fprintf(fp, "  useful_late   (part hide)  = %llu\n", pf_useful_late);
+  fprintf(fp, "demand_accesses (global L1)  = %llu\n", pf_demand_access);
+  fprintf(fp, "demand_misses   (global L1)  = %llu\n", pf_demand_miss);
+  fprintf(fp, "\n");
+
+  fprintf(fp, "-- derived metrics --\n");
+  fprintf(fp, "accuracy   = useful/issued                 = %.2f %%\n", accuracy);
+  fprintf(fp, "coverage   = useful/(misses + useful_timely)= %.2f %%\n", coverage);
+  fprintf(fp, "timeliness = useful_timely/useful           = %.2f %%\n",
+          timeliness);
+  fprintf(fp, "issue_rate = issued/attempted               = %.2f %%\n",
+          issue_rate);
+  fprintf(fp, "\n");
+
+  fprintf(fp, "-- notes --\n");
+  fprintf(fp,
+          "* accuracy: fraction of issued prefetches later used by a demand "
+          "access.\n");
+  fprintf(fp,
+          "* coverage: fraction of (estimated no-prefetch) demand misses that "
+          "the\n              prefetcher serviced.\n");
+  fprintf(fp,
+          "* timeliness: of the useful prefetches, fraction that fully hid the "
+          "miss\n              latency (demand hit) vs. arrived late.\n");
+  fprintf(fp,
+          "* useful detection uses a bounded per-core address table (size %u); "
+          "table\n              conflicts may slightly under-count useful "
+          "prefetches.\n",
+          1024u /* ldst_unit::PF_TRACK_SIZE */);
+  fprintf(fp,
+          "* demand_misses still include prefetch-reserved lines (HIT_RESERVED)"
+          ".\n");
+  fclose(fp);
+}
+
 void shader_core_stats::event_warp_issued(unsigned s_id, unsigned warp_id,
                                           unsigned num_issued,
                                           unsigned dynamic_warp_id) {
@@ -2175,8 +2238,10 @@ void ldst_unit::inject_l1_prefetch(unsigned wid, new_addr_type pf_addr) {
   assert(bank_id < m_config->m_L1D_config.l1_banks);
   // Only inject if the back of the bank's pipeline is free (do not displace or
   // stall demand requests).
-  if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] != NULL)
+  if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] != NULL) {
+    m_stats->pf_dropped_noslot++;
     return;
+  }
 
   active_mask_t amask;
   amask.set(0);
@@ -2191,6 +2256,35 @@ void ldst_unit::inject_l1_prefetch(unsigned wid, new_addr_type pf_addr) {
       wid, m_sid, m_tpc, NULL, (unsigned long long)-1);
   mf->set_prefetch();
   l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+
+  // Record the prefetched block so a later demand reuse counts as "useful".
+  unsigned tidx = (unsigned)((block_addr ^ (block_addr >> 17)) % PF_TRACK_SIZE);
+  m_pf_track[tidx] = block_addr;
+  m_stats->pf_issued++;
+}
+
+// Account a (non-prefetch) demand access at the L1 and detect useful
+// prefetches: if this block was previously prefetched (and not yet consumed),
+// credit the prefetcher.
+void ldst_unit::pf_account_demand(mem_fetch *mf,
+                                  enum cache_request_status status) {
+  const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
+  new_addr_type baddr = mf->get_addr() & ~((new_addr_type)(line_sz - 1));
+  bool miss = (status != HIT);  // MISS or HIT_RESERVED
+
+  m_stats->pf_demand_access++;
+  if (miss) m_stats->pf_demand_miss++;
+
+  if (baddr == 0) return;  // 0 is the empty-slot sentinel
+  unsigned tidx = (unsigned)((baddr ^ (baddr >> 17)) % PF_TRACK_SIZE);
+  if (m_pf_track[tidx] == baddr) {
+    m_pf_track[tidx] = 0;  // consume: count each prefetched block at most once
+    m_stats->pf_useful++;
+    if (miss)
+      m_stats->pf_useful_late++;  // prefetch issued but not yet filled
+    else
+      m_stats->pf_useful_timely++;  // prefetch hid the full miss latency
+  }
 }
 
 void ldst_unit::L1_latency_queue_cycle() {
@@ -2207,6 +2301,11 @@ void ldst_unit::L1_latency_queue_cycle() {
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
 
+      // Monitoring: account the demand access and detect useful prefetches
+      // before the request is (possibly) freed below.
+      if (!mf_next->is_prefetch() && status != RESERVATION_FAIL)
+        pf_account_demand(mf_next, status);
+
       if (mf_next->is_prefetch()) {
         // Prefetch fill: never touches registers/scoreboard.
         if (status != RESERVATION_FAIL) {
@@ -2217,6 +2316,7 @@ void ldst_unit::L1_latency_queue_cycle() {
         } else {
           // MSHR/miss-queue full: drop the prefetch so it never blocks demand.
           assert(!read_sent && !write_sent);
+          m_stats->pf_dropped_mshr++;
           l1_latency_queue[j][0] = NULL;
           delete mf_next;
         }
@@ -2690,8 +2790,9 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_stats = stats;
   m_sid = sid;
   m_tpc = tpc;
-  // Stride prefetcher: fixed-size, zero-initialized table (bounded memory).
+  // Stride prefetcher: fixed-size, zero-initialized tables (bounded memory).
   m_pf_table.assign(PF_TABLE_SIZE, pf_entry_t{0, 0, 0});
+  m_pf_track.assign(PF_TRACK_SIZE, (new_addr_type)0);
   m_last_pf_uid = (unsigned)-1;
 #define STRSIZE 1024
   char L1T_name[STRSIZE];

@@ -1490,6 +1490,13 @@ class ldst_unit : public pipelined_simd_unit {
   unsigned m_last_pf_uid;              // fire prefetcher once per dynamic load
   void l1_stride_prefetch(const warp_inst_t &inst);
   void inject_l1_prefetch(unsigned wid, new_addr_type pf_addr);
+
+  // Monitoring: bounded, direct-mapped table of recently prefetched block
+  // addresses, used to detect useful prefetches (demand reuse). Fixed size ->
+  // no unbounded growth. 0 == empty slot.
+  static const unsigned PF_TRACK_SIZE = 1024;
+  std::vector<new_addr_type> m_pf_track;  // sized PF_TRACK_SIZE in init()
+  void pf_account_demand(mem_fetch *mf, enum cache_request_status status);
 };
 
 enum pipeline_stage_name_t {
@@ -1832,6 +1839,16 @@ struct shader_core_stats_pod {
   unsigned *gpgpu_n_shmem_bank_access;
   long *n_simt_to_mem;  // Interconnect power stats
   long *n_mem_to_simt;
+
+  // ---- Baseline L1 stride prefetcher monitoring (summed over all cores) ----
+  unsigned long long pf_issued;          // prefetches placed in the L1 queue
+  unsigned long long pf_dropped_noslot;  // dropped: no free latency-queue slot
+  unsigned long long pf_dropped_mshr;    // dropped: MSHR/miss-queue full
+  unsigned long long pf_demand_access;   // demand global accesses reaching L1
+  unsigned long long pf_demand_miss;     // of those, L1 misses (MISS/HIT_RES)
+  unsigned long long pf_useful;          // demand access to a prefetched block
+  unsigned long long pf_useful_timely;   // useful, prefetch already filled (HIT)
+  unsigned long long pf_useful_late;     // useful, prefetch still in flight
 };
 
 class shader_core_stats : public shader_core_stats_pod {
@@ -2006,6 +2023,9 @@ class shader_core_stats : public shader_core_stats_pod {
   void visualizer_print(gzFile visualizer_file);
 
   void print(FILE *fout) const;
+
+  // Write the baseline L1 stride prefetcher coverage/accuracy report.
+  void print_prefetch_monitor(const char *path) const;
 
   const std::vector<std::vector<unsigned>> &get_dynamic_warp_issue() const {
     return m_shader_dynamic_warp_issue_distro;

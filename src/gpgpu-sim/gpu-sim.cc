@@ -1533,6 +1533,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   shader_print_scheduler_stat(stdout, false);
 
   m_shader_stats->print(stdout);
+  m_shader_stats->print_prefetch_monitor("monitor.txt");
 #ifdef GPGPUSIM_POWER_MODEL
   if (m_config.g_power_simulation_enabled) {
     if (m_config.g_power_simulation_mode > 0) {
