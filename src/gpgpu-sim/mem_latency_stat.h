@@ -123,6 +123,14 @@ class memory_stats_t {
   unsigned total_n_access;
   unsigned total_n_reads;
   unsigned total_n_writes;
+
+  unsigned long long L2_to_DRAM_bytes = 0;
+  unsigned long long DRAM_to_L2_bytes = 0;
+
+  void report_throughput(unsigned long long current_cycle);
+
+private:
+  unsigned long long last_print_cycle = 0;
 };
 
 #endif /*MEM_LATENCY_STAT_H*/
