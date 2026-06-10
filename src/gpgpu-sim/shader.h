@@ -43,7 +43,6 @@
 #include <list>
 #include <map>
 #include <set>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1476,17 +1475,26 @@ class ldst_unit : public pipelined_simd_unit {
   void L1_latency_queue_cycle();
 
   // --- simple stride-based, warp-level (per warp,PC) L1 prefetcher baseline ---
+  // Fixed-size, direct-mapped stride table (like real hardware): host memory is
+  // bounded to a constant per ldst_unit regardless of how many distinct
+  // (warp,PC) pairs the application executes. An unbounded map here grows with
+  // the cumulative static load PCs across all kernels and can reach tens of GB.
+  static const unsigned PREF_TABLE_ENTRIES = 256;
   struct stride_pref_entry {
+    unsigned long long tag;   // owning key: (warp_id << 32) | pc
     new_addr_type last_line;  // last line address seen for this (warp,PC)
     long long stride;         // last observed stride (in bytes)
     unsigned conf;            // confidence: matching strides observed in a row
     bool valid;
-    stride_pref_entry() : last_line(0), stride(0), conf(0), valid(false) {}
+    stride_pref_entry()
+        : tag(0), last_line(0), stride(0), conf(0), valid(false) {}
   };
-  // table keyed by (warp_id << 32) | pc
-  std::unordered_map<unsigned long long, stride_pref_entry> m_pref_table;
-  // last dynamic-instruction uid fed to the prefetcher, per warp (fire once)
-  std::unordered_map<unsigned, unsigned> m_pref_last_uid;
+  // direct-mapped table, indexed by a hash of (warp_id << 32) | pc; sized to
+  // PREF_TABLE_ENTRIES on first use.
+  std::vector<stride_pref_entry> m_pref_table;
+  // last dynamic-instruction uid fed to the prefetcher, per warp (fire once);
+  // sized to max_warps_per_shader on first use, (unsigned)-1 means "none yet".
+  std::vector<unsigned> m_pref_last_uid;
   // Observe one demand load and, on a confident stride, inject prefetch(es)
   // into free L1 latency-queue slots. Fires at most once per dynamic inst.
   void stride_prefetch(const warp_inst_t &inst, new_addr_type addr);

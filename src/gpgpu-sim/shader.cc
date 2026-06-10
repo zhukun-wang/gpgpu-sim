@@ -2238,19 +2238,29 @@ void ldst_unit::stride_prefetch(const warp_inst_t &inst, new_addr_type addr) {
 
   const unsigned wid = inst.warp_id();
   const unsigned uid = inst.get_uid();
+
+  // Lazily size the bounded tables (constant host memory per ldst_unit).
+  if (m_pref_table.empty()) m_pref_table.resize(PREF_TABLE_ENTRIES);
+  if (m_pref_last_uid.empty())
+    m_pref_last_uid.resize(m_config->max_warps_per_shader, (unsigned)-1);
+
   // Fire at most once per dynamic instruction (memory_cycle is re-entered
   // every cycle while the instruction drains its coalesced accesses).
-  std::unordered_map<unsigned, unsigned>::iterator lu = m_pref_last_uid.find(wid);
-  if (lu != m_pref_last_uid.end() && lu->second == uid) return;
-  m_pref_last_uid[wid] = uid;
+  if (wid < m_pref_last_uid.size()) {
+    if (m_pref_last_uid[wid] == uid) return;
+    m_pref_last_uid[wid] = uid;
+  }
 
   const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
   const new_addr_type line = addr & ~((new_addr_type)line_sz - 1);
   const unsigned long long key = ((unsigned long long)wid << 32) |
                                  (unsigned long long)(unsigned)inst.pc;
+  // Direct-mapped index; eviction on conflict keeps the table size constant.
+  const unsigned idx =
+      (unsigned)((key ^ (key >> 20)) % (unsigned long long)PREF_TABLE_ENTRIES);
 
-  stride_pref_entry &e = m_pref_table[key];
-  if (e.valid) {
+  stride_pref_entry &e = m_pref_table[idx];
+  if (e.valid && e.tag == key) {
     long long s = (long long)line - (long long)e.last_line;
     if (s != 0 && s == e.stride) {
       if (e.conf < 1024) e.conf++;
@@ -2264,7 +2274,12 @@ void ldst_unit::stride_prefetch(const warp_inst_t &inst, new_addr_type addr) {
         inject_l1_prefetch(inst, line + (new_addr_type)(e.stride * (long long)k));
     }
   } else {
+    // Empty slot or a conflicting (warp,PC): (re)claim this entry. Detection
+    // simply restarts for the new owner.
     e.valid = true;
+    e.tag = key;
+    e.stride = 0;
+    e.conf = 0;
   }
   e.last_line = line;
 }
