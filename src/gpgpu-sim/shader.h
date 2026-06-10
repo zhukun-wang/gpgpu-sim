@@ -1473,6 +1473,23 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+
+  // ---- Simple stride-based, warp-level L1 prefetcher (baseline) ----
+  // Always on; no config switch. Detects a per-(warp,pc) constant stride and
+  // injects one prefetch into a free L1 latency-queue slot. Kept deliberately
+  // small to avoid any unbounded memory growth.
+  static const unsigned PF_TABLE_SIZE = 256;      // direct-mapped, fixed
+  static const unsigned PF_DEGREE = 1;            // prefetch-ahead distance
+  static const long long PF_MAX_STRIDE = 1 << 20; // ignore wild strides (1MB)
+  struct pf_entry_t {
+    unsigned long long tag;  // (wid<<32)|pc, 0 == empty (pc is never 0 here)
+    new_addr_type last_addr;
+    long long stride;
+  };
+  std::vector<pf_entry_t> m_pf_table;  // sized PF_TABLE_SIZE in init()
+  unsigned m_last_pf_uid;              // fire prefetcher once per dynamic load
+  void l1_stride_prefetch(const warp_inst_t &inst);
+  void inject_l1_prefetch(unsigned wid, new_addr_type pf_addr);
 };
 
 enum pipeline_stage_name_t {

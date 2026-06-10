@@ -130,7 +130,14 @@ class mem_fetch {
   mem_fetch *get_original_mf() { return original_mf; }
   mem_fetch *get_original_wr_mf() { return original_wr_mf; }
 
+  // Stride prefetcher: mark this request as a hardware prefetch so the L1
+  // datapath drops it on completion without any register writeback.
+  void set_prefetch() { m_is_prefetch = true; }
+  bool is_prefetch() const { return m_is_prefetch; }
+
  private:
+  bool m_is_prefetch = false;
+
   // request source information
   unsigned m_request_uid;
   unsigned m_sid;

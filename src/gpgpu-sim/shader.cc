@@ -2118,6 +2118,81 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
   }
 }
 
+// Baseline stride prefetcher: update the per-(warp,pc) stride table for this
+// demand load and, once a stride has repeated, inject a single L1 prefetch.
+void ldst_unit::l1_stride_prefetch(const warp_inst_t &inst) {
+  // Only global loads, and only when the L1 latency-queue path is in use.
+  if (inst.empty() || !inst.is_load() || !inst.space.is_global()) return;
+  if (m_config->m_L1D_config.l1_latency == 0) return;
+  // Fire at most once per dynamic instruction (memory_cycle is re-entered while
+  // the access queue drains).
+  if (inst.get_uid() == m_last_pf_uid) return;
+  m_last_pf_uid = inst.get_uid();
+
+  // Representative warp address: the first active lane.
+  int lane = -1;
+  for (unsigned t = 0; t < m_config->warp_size; t++)
+    if (inst.active(t)) {
+      lane = t;
+      break;
+    }
+  if (lane < 0) return;
+  new_addr_type addr = inst.get_addr(lane);
+
+  unsigned long long key =
+      (((unsigned long long)inst.warp_id()) << 32) | (unsigned long long)inst.pc;
+  unsigned idx = (unsigned)((key ^ (key >> 17)) % PF_TABLE_SIZE);
+  pf_entry_t &e = m_pf_table[idx];
+
+  if (e.tag != key) {
+    // First sighting (or conflict eviction): record, no stride known yet.
+    e.tag = key;
+    e.last_addr = addr;
+    e.stride = 0;
+    return;
+  }
+
+  long long new_stride = (long long)addr - (long long)e.last_addr;
+  long long abs_stride = (new_stride < 0) ? -new_stride : new_stride;
+  bool confirmed = (new_stride != 0 && new_stride == e.stride &&
+                    abs_stride <= PF_MAX_STRIDE);
+  e.stride = new_stride;
+  e.last_addr = addr;
+
+  if (confirmed) {
+    for (unsigned d = 1; d <= PF_DEGREE; d++)
+      inject_l1_prefetch(inst.warp_id(), addr + (long long)d * new_stride);
+  }
+}
+
+// Inject a single prefetch read into a free L1 latency-queue slot. Never blocks
+// demand traffic: if no slot is free, the prefetch is simply dropped.
+void ldst_unit::inject_l1_prefetch(unsigned wid, new_addr_type pf_addr) {
+  const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
+  new_addr_type block_addr = pf_addr & ~((new_addr_type)(line_sz - 1));
+
+  unsigned bank_id = m_config->m_L1D_config.set_bank(block_addr);
+  assert(bank_id < m_config->m_L1D_config.l1_banks);
+  // Only inject if the back of the bank's pipeline is free (do not displace or
+  // stall demand requests).
+  if (l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] != NULL)
+    return;
+
+  active_mask_t amask;
+  amask.set(0);
+  mem_access_byte_mask_t bmask;
+  bmask.set();  // whole line
+  mem_access_sector_mask_t smask;
+  smask.set();  // all sectors
+
+  mem_fetch *mf = m_mf_allocator->alloc(
+      block_addr, GLOBAL_ACC_R, amask, bmask, smask, line_sz, false,
+      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+      wid, m_sid, m_tpc, NULL, (unsigned long long)-1);
+  mf->set_prefetch();
+  l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+}
+
 void ldst_unit::L1_latency_queue_cycle() {
   for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
     if ((l1_latency_queue[j][0]) != NULL) {
@@ -2132,7 +2207,20 @@ void ldst_unit::L1_latency_queue_cycle() {
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
 
-      if (status == HIT) {
+      if (mf_next->is_prefetch()) {
+        // Prefetch fill: never touches registers/scoreboard.
+        if (status != RESERVATION_FAIL) {
+          l1_latency_queue[j][0] = NULL;
+          // HIT -> done, free it. MISS/HIT_RESERVED -> now tracked in the MSHR
+          // and reclaimed on fill in writeback(); do not delete here.
+          if (status == HIT && !write_sent) delete mf_next;
+        } else {
+          // MSHR/miss-queue full: drop the prefetch so it never blocks demand.
+          assert(!read_sent && !write_sent);
+          l1_latency_queue[j][0] = NULL;
+          delete mf_next;
+        }
+      } else if (status == HIT) {
         assert(!read_sent);
         l1_latency_queue[j][0] = NULL;
         if (mf_next->get_inst().is_load()) {
@@ -2312,6 +2400,9 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
   } else {
     assert(CACHE_UNDEFINED != inst.cache_op);
     stall_cond = process_memory_access_queue_l1cache(m_L1D, inst);
+    // Baseline warp-level stride prefetcher. Runs after demand requests have
+    // claimed their latency-queue slots so it can never displace demand.
+    l1_stride_prefetch(inst);
   }
   if (!inst.accessq_empty() && stall_cond == NO_RC_FAIL)
     stall_cond = COAL_STALL;
@@ -2599,6 +2690,9 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_stats = stats;
   m_sid = sid;
   m_tpc = tpc;
+  // Stride prefetcher: fixed-size, zero-initialized table (bounded memory).
+  m_pf_table.assign(PF_TABLE_SIZE, pf_entry_t{0, 0, 0});
+  m_last_pf_uid = (unsigned)-1;
 #define STRSIZE 1024
   char L1T_name[STRSIZE];
   char L1C_name[STRSIZE];
