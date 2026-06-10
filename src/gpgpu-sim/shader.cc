@@ -2129,6 +2129,14 @@ void ldst_unit::L1_latency_queue_cycle() {
                             m_core->get_gpu()->gpu_tot_sim_cycle,
                         events);
 
+      // Train the stride prefetcher on demand global loads. RESERVATION_FAIL
+      // means the request stays in the queue and is retried next cycle, so we
+      // only observe outcomes that consume the entry to avoid double counting.
+      if (m_prefetcher && status != RESERVATION_FAIL &&
+          !mf_next->is_prefetch() && mf_next->get_inst().is_load() &&
+          mf_next->get_access_type() == GLOBAL_ACC_R)
+        m_prefetcher->observe_demand(mf_next, status);
+
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
 
@@ -2210,6 +2218,199 @@ void ldst_unit::L1_latency_queue_cycle() {
         l1_latency_queue[j][stage + 1] = NULL;
       }
   }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Warp-level stride prefetcher
+/////////////////////////////////////////////////////////////////////////////
+
+stride_prefetcher::stride_prefetcher(const shader_core_config *config,
+                                     const cache_config &l1d_config,
+                                     shader_core_stats *stats)
+    : m_config(config), m_l1d_config(l1d_config), m_stats(stats) {
+  m_degree = config->gpgpu_prefetch_degree ? config->gpgpu_prefetch_degree : 1;
+  m_distance = config->gpgpu_prefetch_distance;
+  m_threshold = config->gpgpu_prefetch_threshold;
+  m_table_size = config->gpgpu_prefetch_table_size;
+  m_page_guard = config->gpgpu_prefetch_page_guard;
+  // bound the proposal queue so a runaway stride cannot grow it without limit
+  m_queue_size = m_degree * 8 + 8;
+}
+
+bool stride_prefetcher::same_page(new_addr_type a, new_addr_type b) const {
+  return (a / PAGE_SIZE) == (b / PAGE_SIZE);
+}
+
+void stride_prefetcher::note_inflight(new_addr_type block_addr) {
+  if (m_inflight.insert(block_addr).second) {
+    m_inflight_fifo.push_back(block_addr);
+    // keep the shadow set bounded; dropping the oldest entry only risks a
+    // slight undercount of coverage for very stale prefetches
+    while (m_inflight_fifo.size() > MAX_INFLIGHT) {
+      new_addr_type old = m_inflight_fifo.front();
+      m_inflight_fifo.pop_front();
+      m_inflight.erase(old);
+    }
+  }
+}
+
+void stride_prefetcher::observe_demand(mem_fetch *demand_mf,
+                                       enum cache_request_status status) {
+  const unsigned warp_id = demand_mf->get_inst().warp_id();
+  const address_type pc = demand_mf->get_inst().pc;
+  const new_addr_type addr = demand_mf->get_addr();
+  const new_addr_type block_addr = m_l1d_config.block_addr(addr);
+
+  m_stats->m_pf_demand_accesses++;
+
+  // ---- coverage / accuracy accounting --------------------------------------
+  std::unordered_set<new_addr_type>::iterator cov = m_inflight.find(block_addr);
+  if (cov != m_inflight.end()) {
+    // this demand hit a block we prefetched -> the prefetch was useful
+    m_stats->m_pf_useful++;
+    if (status != HIT) m_stats->m_pf_late++;  // prefetch arrived/merged late
+    m_inflight.erase(cov);
+  } else if (status != HIT) {
+    // a real miss that no prefetch covered
+    m_stats->m_pf_uncovered_misses++;
+  }
+
+  // ---- stride detection ----------------------------------------------------
+  const uint64_t key = (((uint64_t)warp_id) << 32) | (uint32_t)pc;
+  std::unordered_map<uint64_t, pt_entry>::iterator it = m_table.find(key);
+  if (it == m_table.end()) {
+    if (m_table.size() >= m_table_size) return;  // table full: no new training
+    pt_entry e;
+    e.last_block_addr = block_addr;
+    e.last_stride = 0;
+    e.confidence = 0;
+    m_table[key] = e;
+    return;
+  }
+
+  pt_entry &e = it->second;
+  long long stride = (long long)block_addr - (long long)e.last_block_addr;
+  if (stride != 0 && stride == e.last_stride) {
+    if (e.confidence < m_threshold + 1) e.confidence++;
+  } else {
+    e.last_stride = stride;
+    e.confidence = 0;
+  }
+  e.last_block_addr = block_addr;
+
+  if (e.last_stride == 0 || e.confidence < m_threshold) return;
+
+  // ---- enqueue prefetch candidates -----------------------------------------
+  for (unsigned i = 0; i < m_degree; i++) {
+    long long ahead = (long long)(m_distance + i);
+    new_addr_type pf_addr = (new_addr_type)((long long)addr + e.last_stride * ahead);
+    new_addr_type pf_block = m_l1d_config.block_addr(pf_addr);
+
+    if (m_page_guard && !same_page(addr, pf_addr)) break;
+    if (m_inflight.count(pf_block)) continue;     // already prefetched
+    if (m_queue.size() >= m_queue_size) break;     // queue full
+
+    // clone the demand access so sector/byte masks match, then retarget it.
+    // the stride is a multiple of the line size, so the within-line offset
+    // (and therefore the sector mask) is preserved.
+    mem_access_t pf_access(GLOBAL_ACC_R, pf_addr, demand_mf->get_access_size(),
+                           false, demand_mf->get_access_warp_mask(),
+                           demand_mf->get_access_byte_mask(),
+                           demand_mf->get_access_sector_mask(),
+                           m_config->gpgpu_ctx);
+    m_queue.push_back(
+        stride_pf_request(pf_access, warp_id, demand_mf->get_streamID()));
+  }
+}
+
+stride_pf_request stride_prefetcher::pop_front() {
+  assert(!m_queue.empty());
+  stride_pf_request req = m_queue.front();
+  m_queue.pop_front();
+  return req;
+}
+
+void stride_prefetcher::on_prefetch_issued(new_addr_type block_addr) {
+  m_stats->m_pf_issued++;
+  note_inflight(block_addr);
+}
+
+void stride_prefetcher::on_prefetch_redundant() {
+  m_stats->m_pf_dropped_redundant++;
+}
+
+void stride_prefetcher::on_prefetch_resource_fail() {
+  m_stats->m_pf_dropped_resource++;
+}
+
+void ldst_unit::prefetch_cycle() {
+  if (!m_prefetcher) return;
+  unsigned long long cycle =
+      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+
+  for (unsigned n = 0; n < m_config->gpgpu_prefetch_throttle; n++) {
+    if (!m_prefetcher->has_pending()) break;
+    if (!m_L1D->data_port_free()) break;  // never steal demand bandwidth
+
+    stride_pf_request req = m_prefetcher->pop_front();
+    const new_addr_type pf_block =
+        m_config->m_L1D_config.block_addr(req.access.get_addr());
+
+    mem_fetch *pf = m_mf_allocator->alloc(
+        req.access.get_addr(), GLOBAL_ACC_R, req.access.get_warp_mask(),
+        req.access.get_byte_mask(), req.access.get_sector_mask(),
+        req.access.get_size(), false, cycle, req.warp_id, m_sid, m_tpc, NULL,
+        req.streamID);
+    pf->set_prefetch();
+
+    std::list<cache_event> events;
+    enum cache_request_status status =
+        m_L1D->access(pf->get_addr(), pf, cycle, events);
+
+    if (status == HIT) {
+      // already resident; nothing to fetch
+      m_prefetcher->on_prefetch_redundant();
+      delete pf;
+    } else if (status == RESERVATION_FAIL) {
+      // MSHR / miss queue full: the L1D did not accept the request
+      m_prefetcher->on_prefetch_resource_fail();
+      delete pf;
+    } else if (status == HIT_RESERVED) {
+      // the line is already being fetched (by a demand or an earlier prefetch);
+      // `pf` merged into the MSHR and is owned by the L1D (returned/dropped via
+      // next_access), but we issued no new fetch, so do not claim credit.
+      m_prefetcher->on_prefetch_redundant();
+    } else {
+      // MISS: a new fetch was launched. The L1D now owns `pf` and will return
+      // it via next_access() once the fill completes (dropped in writeback).
+      assert(status == MISS);
+      m_prefetcher->on_prefetch_issued(pf_block);
+    }
+  }
+}
+
+void shader_core_stats::print_prefetch_stats(FILE *fout) const {
+  if (!m_config->gpgpu_enable_prefetch) return;
+
+  unsigned long long issued = m_pf_issued;
+  unsigned long long useful = m_pf_useful;
+  unsigned long long miss_denom = useful + m_pf_uncovered_misses;
+
+  fprintf(fout, "\n========= L1D stride prefetcher stats =========\n");
+  fprintf(fout, "prefetch_requests_issued = %llu\n", issued);
+  fprintf(fout, "prefetch_dropped_redundant = %llu\n", m_pf_dropped_redundant);
+  fprintf(fout, "prefetch_dropped_resource = %llu\n", m_pf_dropped_resource);
+  fprintf(fout, "prefetch_useful = %llu\n", useful);
+  fprintf(fout, "prefetch_late = %llu\n", m_pf_late);
+  fprintf(fout, "prefetch_demand_accesses = %llu\n", m_pf_demand_accesses);
+  fprintf(fout, "prefetch_uncovered_misses = %llu\n", m_pf_uncovered_misses);
+  // Accuracy  = useful prefetches / prefetches issued
+  fprintf(fout, "prefetch_accuracy = %.4lf\n",
+          issued ? (double)useful / (double)issued : 0.0);
+  // Coverage  = covered misses / misses that would occur without prefetching
+  //           = useful / (useful + uncovered demand misses)
+  fprintf(fout, "prefetch_coverage = %.4lf\n",
+          miss_denom ? (double)useful / (double)miss_denom : 0.0);
 }
 
 bool ldst_unit::constant_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
@@ -2618,6 +2819,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_next_global = NULL;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
+  m_prefetcher = NULL;
 }
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
@@ -2645,6 +2847,12 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
     for (unsigned j = 0; j < m_config->m_L1D_config.l1_banks; j++)
       l1_latency_queue[j].resize(m_config->m_L1D_config.l1_latency,
                                  (mem_fetch *)NULL);
+
+    // The prefetcher fills the L1D, so it is only meaningful when global loads
+    // actually use it (not when they skip L1D and go straight to the icnt).
+    if (m_config->gpgpu_enable_prefetch && !m_config->gmem_skip_L1D)
+      m_prefetcher = new stride_prefetcher(m_config, m_config->m_L1D_config,
+                                           m_stats);
   }
   m_name = "MEM ";
 }
@@ -2785,8 +2993,14 @@ void ldst_unit::writeback() {
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
           mem_fetch *mf = m_L1D->next_access();
-          m_next_wb = mf->get_inst();
-          delete mf;
+          if (mf->is_prefetch()) {
+            // A prefetch has no destination register; the line is already
+            // filled into the L1D, so just retire the request.
+            delete mf;
+          } else {
+            m_next_wb = mf->get_inst();
+            delete mf;
+          }
           serviced_client = next_client;
         }
         break;
@@ -2900,6 +3114,7 @@ void ldst_unit::cycle() {
   if (m_L1D) {
     m_L1D->cycle();
     if (m_config->m_L1D_config.l1_latency > 0) L1_latency_queue_cycle();
+    if (m_prefetcher) prefetch_cycle();
   }
 
   warp_inst_t &pipe_reg = *m_dispatch_reg;

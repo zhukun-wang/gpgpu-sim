@@ -43,6 +43,8 @@
 #include <list>
 #include <map>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1341,6 +1343,81 @@ class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
 
+// A pending prefetch candidate produced by the stride prefetcher. The access
+// is a copy of the triggering demand access whose address has been advanced by
+// the detected stride, so it traverses the (possibly sector) cache machinery
+// identically to a real demand request.
+struct stride_pf_request {
+  mem_access_t access;
+  unsigned warp_id;
+  unsigned long long streamID;
+  stride_pf_request(const mem_access_t &a, unsigned w, unsigned long long s)
+      : access(a), warp_id(w), streamID(s) {}
+};
+
+// Simple warp-level, per-(warp,PC) stride prefetcher for the L1 data cache.
+//
+// For every demand global load it tracks the last block address seen by that
+// (warp,PC) pair and the last stride between successive accesses. Once the same
+// stride repeats for `threshold` consecutive accesses the entry is "trained"
+// and the prefetcher proposes the next `degree` blocks (starting `distance`
+// strides ahead). The owning ldst_unit drains the proposal queue and injects
+// real read requests into the L1D, so prefetches affect cache state and timing.
+//
+// Accuracy/coverage are measured with a shadow set of prefetched block
+// addresses: a demand access whose block is in the set counts as a covered
+// miss (the prefetch was useful); a demand miss whose block is not in the set
+// is an uncovered miss. All counters are accumulated into the shared
+// shader_core_stats so they aggregate across cores.
+class stride_prefetcher {
+ public:
+  stride_prefetcher(const shader_core_config *config,
+                    const cache_config &l1d_config,
+                    class shader_core_stats *stats);
+
+  // Observe a demand global load at the point it probes the L1D. `status` is
+  // the probe outcome (HIT == already resident).
+  void observe_demand(class mem_fetch *demand_mf,
+                      enum cache_request_status status);
+
+  bool has_pending() const { return !m_queue.empty(); }
+  // Pop and return the next prefetch candidate. Precondition: has_pending().
+  stride_pf_request pop_front();
+
+  // Issue-path callbacks: the ldst_unit reports how the L1D handled a prefetch.
+  void on_prefetch_issued(new_addr_type block_addr);
+  void on_prefetch_redundant();
+  void on_prefetch_resource_fail();
+
+ private:
+  struct pt_entry {
+    new_addr_type last_block_addr;
+    long long last_stride;
+    unsigned confidence;
+  };
+  bool same_page(new_addr_type a, new_addr_type b) const;
+  void note_inflight(new_addr_type block_addr);
+
+  const shader_core_config *m_config;
+  const cache_config &m_l1d_config;
+  class shader_core_stats *m_stats;
+
+  std::unordered_map<uint64_t, pt_entry> m_table;  // key = (warp_id<<32)|pc
+  std::unordered_set<new_addr_type> m_inflight;    // prefetched, not yet used
+  std::deque<new_addr_type> m_inflight_fifo;       // bounds m_inflight size
+  std::deque<stride_pf_request> m_queue;           // pending candidates
+
+  unsigned m_degree;
+  unsigned m_distance;
+  unsigned m_threshold;
+  unsigned m_table_size;
+  unsigned m_queue_size;
+  bool m_page_guard;
+
+  static const new_addr_type PAGE_SIZE = 4096;
+  static const size_t MAX_INFLIGHT = 1 << 16;  // cap shadow-set memory
+};
+
 class ldst_unit : public pipelined_simd_unit {
  public:
   ldst_unit(mem_fetch_interface *icnt,
@@ -1473,6 +1550,11 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+
+  // Warp-level stride prefetcher (NULL unless enabled and L1D is present).
+  stride_prefetcher *m_prefetcher;
+  // Drain the prefetcher's candidate queue, injecting requests into the L1D.
+  void prefetch_cycle();
 };
 
 enum pipeline_stage_name_t {
@@ -1636,6 +1718,15 @@ class shader_core_config : public core_config {
   mutable cache_config m_L1T_config;
   mutable cache_config m_L1C_config;
   mutable l1d_cache_config m_L1D_config;
+
+  // Warp-level stride prefetcher (per-(warp,PC)) for the L1 data cache
+  bool gpgpu_enable_prefetch;
+  unsigned gpgpu_prefetch_degree;     // # of lines prefetched per trigger
+  unsigned gpgpu_prefetch_distance;   // how many strides ahead to start
+  unsigned gpgpu_prefetch_threshold;  // confidence needed before prefetching
+  unsigned gpgpu_prefetch_throttle;   // max prefetches issued to L1D per cycle
+  unsigned gpgpu_prefetch_table_size; // max entries in the stride table
+  bool gpgpu_prefetch_page_guard;     // do not prefetch across a 4KB page
 
   bool gpgpu_dwf_reg_bankconflict;
 
@@ -1824,6 +1915,14 @@ class shader_core_stats : public shader_core_stats_pod {
     shader_core_stats_pod *pod = reinterpret_cast<shader_core_stats_pod *>(
         this->shader_core_stats_pod_start);
     memset(pod, 0, sizeof(shader_core_stats_pod));
+    // prefetcher counters are outside the POD region, zero them explicitly
+    m_pf_issued = 0;
+    m_pf_useful = 0;
+    m_pf_late = 0;
+    m_pf_dropped_redundant = 0;
+    m_pf_dropped_resource = 0;
+    m_pf_demand_accesses = 0;
+    m_pf_uncovered_misses = 0;
     shader_cycles = (unsigned long long *)calloc(config->num_shader(),
                                                  sizeof(unsigned long long));
     m_num_sim_insn = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
@@ -1997,6 +2096,21 @@ class shader_core_stats : public shader_core_stats_pod {
   const std::vector<std::vector<unsigned>> &get_warp_slot_issue() const {
     return m_shader_warp_slot_issue_distro;
   }
+
+  // Print the aggregate stride-prefetcher accuracy and coverage. No-op unless
+  // the prefetcher is enabled. Defined in shader.cc.
+  void print_prefetch_stats(FILE *fout) const;
+
+  // Aggregate stride-prefetcher counters. These live outside the memset-ed POD
+  // region and are shared across all cores (one shader_core_stats per GPU), so
+  // every ldst_unit's prefetcher accumulates into the same totals.
+  unsigned long long m_pf_issued;             // prefetches accepted by the L1D
+  unsigned long long m_pf_useful;             // prefetched blocks later demanded
+  unsigned long long m_pf_late;               // useful but block still in flight
+  unsigned long long m_pf_dropped_redundant;  // candidate already cached/in-flight
+  unsigned long long m_pf_dropped_resource;   // L1D refused (MSHR/miss queue full)
+  unsigned long long m_pf_demand_accesses;    // demand global loads observed
+  unsigned long long m_pf_uncovered_misses;   // demand misses not covered by a pf
 
  private:
   const shader_core_config *m_config;

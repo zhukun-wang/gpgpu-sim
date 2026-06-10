@@ -372,6 +372,28 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &m_L1D_config.l1_latency, "L1 Hit Latency", "1");
   option_parser_register(opp, "-gpgpu_smem_latency", OPT_UINT32, &smem_latency,
                          "smem Latency", "3");
+  option_parser_register(
+      opp, "-gpgpu_enable_prefetch", OPT_BOOL, &gpgpu_enable_prefetch,
+      "enable the warp-level stride prefetcher for the L1 data cache", "0");
+  option_parser_register(opp, "-gpgpu_prefetch_degree", OPT_UINT32,
+                         &gpgpu_prefetch_degree,
+                         "number of cache lines prefetched per trigger", "1");
+  option_parser_register(
+      opp, "-gpgpu_prefetch_distance", OPT_UINT32, &gpgpu_prefetch_distance,
+      "how many strides ahead the prefetcher looks (prefetch distance)", "1");
+  option_parser_register(
+      opp, "-gpgpu_prefetch_threshold", OPT_UINT32, &gpgpu_prefetch_threshold,
+      "confidence (consecutive matching strides) required before prefetching",
+      "2");
+  option_parser_register(
+      opp, "-gpgpu_prefetch_throttle", OPT_UINT32, &gpgpu_prefetch_throttle,
+      "maximum number of prefetches issued into the L1D per cycle", "1");
+  option_parser_register(opp, "-gpgpu_prefetch_table_size", OPT_UINT32,
+                         &gpgpu_prefetch_table_size,
+                         "maximum number of entries in the stride table", "1024");
+  option_parser_register(
+      opp, "-gpgpu_prefetch_page_guard", OPT_BOOL, &gpgpu_prefetch_page_guard,
+      "do not issue prefetches that cross a 4KB page boundary", "1");
   option_parser_register(opp, "-gpgpu_cache:dl1PrefL1", OPT_CSTR,
                          &m_L1D_config.m_config_stringPrefL1,
                          "per-shader L1 data cache config "
@@ -1533,6 +1555,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   shader_print_scheduler_stat(stdout, false);
 
   m_shader_stats->print(stdout);
+  m_shader_stats->print_prefetch_stats(stdout);
 #ifdef GPGPUSIM_POWER_MODEL
   if (m_config.g_power_simulation_enabled) {
     if (m_config.g_power_simulation_mode > 0) {
