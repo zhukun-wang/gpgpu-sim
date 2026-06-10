@@ -763,7 +763,9 @@ void shader_core_stats::print_prefetch_monitor(const char *path) const {
       total_issued ? (100.0 * (double)issued / (double)total_issued) : 0.0;
 
   fprintf(fp, "===== L1 stride prefetcher monitor =====\n");
-  fprintf(fp, "(simple warp-level, per-(warp,pc) stride; always-on baseline)\n\n");
+  fprintf(fp,
+          "(intra-warp spatial stride: next line(s) past the warp footprint; "
+          "always-on baseline)\n\n");
 
   fprintf(fp, "-- raw counters (summed over all SM cores) --\n");
   fprintf(fp, "prefetches_issued            = %llu\n", issued);
@@ -2181,8 +2183,11 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
   }
 }
 
-// Baseline stride prefetcher: update the per-(warp,pc) stride table for this
-// demand load and, once a stride has repeated, inject a single L1 prefetch.
+// Baseline intra-warp (spatial) stride prefetcher. Looks at the per-lane
+// addresses of this single warp load, derives the per-thread stride, and
+// prefetches the next cache line(s) just beyond the warp's footprint in the
+// stride direction. Stateless across instructions -> fires immediately on
+// streaming/strided kernels with no history table.
 void ldst_unit::l1_stride_prefetch(const warp_inst_t &inst) {
   // Only global loads, and only when the L1 latency-queue path is in use.
   if (inst.empty() || !inst.is_load() || !inst.space.is_global()) return;
@@ -2192,39 +2197,48 @@ void ldst_unit::l1_stride_prefetch(const warp_inst_t &inst) {
   if (inst.get_uid() == m_last_pf_uid) return;
   m_last_pf_uid = inst.get_uid();
 
-  // Representative warp address: the first active lane.
-  int lane = -1;
-  for (unsigned t = 0; t < m_config->warp_size; t++)
-    if (inst.active(t)) {
-      lane = t;
-      break;
+  // Scan active lanes: footprint [min_addr, max_addr] and the per-thread stride
+  // taken from the first and last active lanes.
+  int first_lane = -1, last_lane = -1;
+  new_addr_type first_addr = 0, last_addr = 0;
+  new_addr_type min_addr = (new_addr_type)-1, max_addr = 0;
+  for (unsigned t = 0; t < m_config->warp_size; t++) {
+    if (!inst.active(t)) continue;
+    new_addr_type a = inst.get_addr(t);
+    if (first_lane < 0) {
+      first_lane = t;
+      first_addr = a;
     }
-  if (lane < 0) return;
-  new_addr_type addr = inst.get_addr(lane);
-
-  unsigned long long key =
-      (((unsigned long long)inst.warp_id()) << 32) | (unsigned long long)inst.pc;
-  unsigned idx = (unsigned)((key ^ (key >> 17)) % PF_TABLE_SIZE);
-  pf_entry_t &e = m_pf_table[idx];
-
-  if (e.tag != key) {
-    // First sighting (or conflict eviction): record, no stride known yet.
-    e.tag = key;
-    e.last_addr = addr;
-    e.stride = 0;
-    return;
+    last_lane = t;
+    last_addr = a;
+    if (a < min_addr) min_addr = a;
+    if (a > max_addr) max_addr = a;
   }
+  if (first_lane < 0) return;  // no active lane
 
-  long long new_stride = (long long)addr - (long long)e.last_addr;
-  long long abs_stride = (new_stride < 0) ? -new_stride : new_stride;
-  bool confirmed = (new_stride != 0 && new_stride == e.stride &&
-                    abs_stride <= PF_MAX_STRIDE);
-  e.stride = new_stride;
-  e.last_addr = addr;
+  // Per-thread stride (sign gives the streaming direction). Defaults to "ascending"
+  // when the warp has a single active lane or a degenerate (zero) stride.
+  long long stride = 0;
+  if (last_lane > first_lane)
+    stride = ((long long)last_addr - (long long)first_addr) /
+             (long long)(last_lane - first_lane);
 
-  if (confirmed) {
-    for (unsigned d = 1; d <= PF_DEGREE; d++)
-      inject_l1_prefetch(inst.warp_id(), addr + (long long)d * new_stride);
+  const unsigned line_sz = m_config->m_L1D_config.get_line_sz();
+  const new_addr_type line_mask = ~((new_addr_type)(line_sz - 1));
+  new_addr_type min_block = min_addr & line_mask;
+  new_addr_type max_block = max_addr & line_mask;
+
+  // Prefetch the next PF_DEGREE lines just past the footprint edge, walking in
+  // the stride direction.
+  for (unsigned d = 1; d <= PF_DEGREE; d++) {
+    new_addr_type pf_block;
+    if (stride < 0) {
+      if (min_block < (new_addr_type)d * line_sz) break;  // would underflow
+      pf_block = min_block - (new_addr_type)d * line_sz;
+    } else {
+      pf_block = max_block + (new_addr_type)d * line_sz;
+    }
+    inject_l1_prefetch(inst.warp_id(), pf_block);
   }
 }
 
@@ -2790,8 +2804,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_stats = stats;
   m_sid = sid;
   m_tpc = tpc;
-  // Stride prefetcher: fixed-size, zero-initialized tables (bounded memory).
-  m_pf_table.assign(PF_TABLE_SIZE, pf_entry_t{0, 0, 0});
+  // Stride prefetcher monitoring: fixed-size, zero-initialized table (bounded).
   m_pf_track.assign(PF_TRACK_SIZE, (new_addr_type)0);
   m_last_pf_uid = (unsigned)-1;
 #define STRSIZE 1024
