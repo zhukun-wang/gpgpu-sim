@@ -120,18 +120,16 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
    FILE* f = fopen("/accel-sim/accel-sim-framework/mpool/mpool.txt", "r");
 
-    unsigned long long n;
+    unsigned long long t;
     unsigned long long a;
     unsigned long long b;
 
     //while (fscanf(f, "%llu %llx %llx", &t, &b, &a) == 3) {
-    //while (fscanf(f, "%llx %llx %llu", &b, &a, &n) == 3) {
-    while (fscanf(f, "%llx %llx", &b, &a) == 2) {
+    while (fscanf(f, "%llx %llx %llu", &b, &a, &t) == 3) {
         PrefetchMemEntry entry;
-        //entry.time = t;
         entry.base = (uint64_t)b;
 	entry.addr = (uint64_t)a;
-	//entry.num = n;
+	entry.appear = (uint64_t)t;
 
 	addrdec_t tlx;
 	m_config->m_address_mapping.addrdec_tlx(a, &tlx);
@@ -1288,7 +1286,7 @@ void memory_partition_unit::active_mpool() {
                 cand.addr = it->addr;
                 cand.bank = bk;
                 cand.row = tlx.row;
-                cand.label = 4;
+                cand.appear = it->appear;
                 cand.time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
                 mpool.push_back(cand);
                 it = g_prefetch_mem_table.erase(it);
@@ -1297,42 +1295,18 @@ void memory_partition_unit::active_mpool() {
             }
         }
 
-        bool skip_label = false;
-        for (const auto &cand : mpool) {
-            if (cand.addr == b && cand.label == 1) {
-                skip_label = true;
-                break;
-            }
-        }
-
-        if (!skip_label) {
-            for (auto &cand : mpool) {
-                new_addr_type offset = cand.addr - b;
-                if (offset == 1 * STEP_SMALL ||
-                    offset == 2 * STEP_SMALL ||
-                    offset == 3 * STEP_SMALL) {
-                    cand.label = 1;
-                }
-                else if (offset == STEP_BIG ||
-			 offset == STEP_BIG + 1 * STEP_SMALL ||
-                         offset == STEP_BIG + 2 * STEP_SMALL ||
-                         offset == STEP_BIG + 3 * STEP_SMALL) {
-                    cand.label = 2;
-                }
-                else if (offset == 4 * STEP_SMALL ||
-                         offset == 5 * STEP_SMALL ||
-                         offset == 6 * STEP_SMALL ||
-                         offset == 7 * STEP_SMALL ||
-                         offset == STEP_BIG + 4 * STEP_SMALL ||
-                         offset == STEP_BIG + 5 * STEP_SMALL ||
-                         offset == STEP_BIG + 6 * STEP_SMALL ||
-                         offset == STEP_BIG + 7 * STEP_SMALL) {
-                    cand.label = 3;
-                }
-            }
-        }
-
         rec_it = rec.erase(rec_it);
+    }
+
+    // Drop any candidate whose appear time has already passed: the address has
+    // already shown up as a demand, so prefetching it is pointless.
+    unsigned long long now = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    for (auto it = mpool.begin(); it != mpool.end(); ) {
+        if (it->appear <= now) {
+            it = mpool.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -1400,48 +1374,41 @@ new_addr_type memory_partition_unit::pick_prefetch_addr_from_pattern()
         return mp.find(row) != mp.end();
     };
 
-    std::set<int> labels;
-    for (const PoolCand &c : mpool)
-        labels.insert(c.label);
-
-    for (int lbl : labels) {
-        {
-            PoolCand *best = nullptr;
-            for (PoolCand &c : mpool) {
-                if (c.label != lbl) continue;
-                if ((unsigned)c.bank < m_bank_inflight.size()
-                    && m_bank_inflight[c.bank] == 0) {
-                    if (!best || c.time < best->time)
-                        best = &c;
-                }
+    // No labels anymore: within each bank-availability tier, send the
+    // candidate with the smallest appear time first.
+    {
+        PoolCand *best = nullptr;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size()
+                && m_bank_inflight[c.bank] == 0) {
+                if (!best || c.appear < best->appear)
+                    best = &c;
             }
-            if (best) return best->addr;
         }
-        {
-            PoolCand *best = nullptr;
-            for (PoolCand &c : mpool) {
-                if (c.label != lbl) continue;
-                if ((unsigned)c.bank < m_bank_inflight.size()
-                    && m_bank_inflight[c.bank] < 4
-                    && has_pending_row(c.bank, c.row)) {
-                    if (!best || c.time < best->time)
-                        best = &c;
-                }
+        if (best) return best->addr;
+    }
+    {
+        PoolCand *best = nullptr;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size()
+                && m_bank_inflight[c.bank] < 4
+                && has_pending_row(c.bank, c.row)) {
+                if (!best || c.appear < best->appear)
+                    best = &c;
             }
-            if (best) return best->addr;
         }
-        {
-            PoolCand *best = nullptr;
-            for (PoolCand &c : mpool) {
-                if (c.label != lbl) continue;
-                if ((unsigned)c.bank < m_bank_inflight.size()
-                    && m_bank_inflight[c.bank] < 4) {
-                    if (!best || c.time < best->time)
-                        best = &c;
-                }
+        if (best) return best->addr;
+    }
+    {
+        PoolCand *best = nullptr;
+        for (PoolCand &c : mpool) {
+            if ((unsigned)c.bank < m_bank_inflight.size()
+                && m_bank_inflight[c.bank] < 4) {
+                if (!best || c.appear < best->appear)
+                    best = &c;
             }
-            if (best) return best->addr;
         }
+        if (best) return best->addr;
     }
 
     return 0;

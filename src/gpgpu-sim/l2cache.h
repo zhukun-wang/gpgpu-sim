@@ -262,6 +262,7 @@ inline void pf_mark_arrived(new_addr_type addr) {
     //unsigned long long time;
     uint64_t base;
     uint64_t addr;
+    uint64_t appear;   // appear time of addr (3rd column of mpool.txt)
     //unsigned long long num;
   };
 
@@ -272,7 +273,7 @@ inline void pf_mark_arrived(new_addr_type addr) {
     int bank;
     unsigned row;
     unsigned time;
-    unsigned label;
+    unsigned long long appear;   // appear time carried from mpool.txt
   };
 
   new_addr_type STEP_SMALL = 0x20;
